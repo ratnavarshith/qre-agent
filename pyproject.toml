@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qre-agent"
+version = "0.0.0"
+requires-python = ">=3.10"
+dependencies = ["qdk[qiskit,qre]", "pyyaml"]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+qre_agent = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint.isort]
+known-first-party = ["qdk"]  # keeps the qiskit / qdk grouping used in scripts/

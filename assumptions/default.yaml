@@ -1,0 +1,13 @@
+# Surface-code assumptions for estimate_surface. Mirrors legacy qubit_gate_ns_e3 + surface_code
+# (see docs/qdk-interface.md for the legacy-to-v3 mapping).
+qec: surface_code
+physical_error_rate: 1.0e-3
+gate_time_ns: 50
+two_qubit_gate_time_ns: 50
+measurement_time_ns: 100
+code_cycle_ns: 400
+error_budget: 1.0e-3
+transpile:
+  basis_gates: [h, x, y, z, s, sdg, t, tdg, rx, ry, rz, cx, cz]
+  optimization_level: 0
+  seed: 0
