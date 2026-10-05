@@ -1,0 +1,158 @@
+import math
+import sys
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+from circuits import pauli_evolution, qft
+from qiskit import QuantumCircuit
+from qiskit.circuit.library import PauliEvolutionGate
+from qiskit.quantum_info import SparsePauliOp
+from qiskit.transpiler.passes import LitinskiTransformation
+
+from qre_agent import estimate_bicycle, estimate_surface, load_assumptions
+from qre_agent.bicycle import physical_qubits
+from qre_agent.pbc import iter_pbc
+
+A = load_assumptions()
+UPSTREAM_SCRIPTS = Path(A.compiler_dir).parents[1] / "scripts"
+needs_compiler = pytest.mark.skipif(
+    not Path(A.compiler_dir).is_dir(), reason="bicycle compiler not built"
+)
+
+
+@pytest.fixture(scope="module")
+def upstream_parse():
+    if not (UPSTREAM_SCRIPTS / "qiskit_parser.py").is_file():
+        pytest.skip("upstream qiskit_parser.py not found")
+    sys.path.insert(0, str(UPSTREAM_SCRIPTS))
+    from qiskit_parser import iter_qiskit_pbc_circuit
+
+    return lambda pbc: list(iter_qiskit_pbc_circuit(pbc))
+
+
+def litinski(circuit, use_ppr=False):
+    return LitinskiTransformation(fix_clifford=False, use_ppr=use_ppr)(circuit)
+
+
+def gates(*ops, n=2, measure=True):
+    c = QuantumCircuit(n, n)
+    for name, *args in ops:
+        getattr(c, name)(*args)
+    if measure:
+        c.measure(range(n), range(n))
+    return litinski(c)
+
+
+def evolution(label, coeff, time, qubits, n):
+    c = QuantumCircuit(n)
+    c.append(PauliEvolutionGate(SparsePauliOp(label, coeffs=[coeff]), time=time), qubits)
+    return c
+
+
+# PBC circuits where the upstream parser is right: measurements (incl. signs and Y), and rotations
+# on the circuit's leading qubits in order, where only the angle convention differs.
+UPSTREAM_CORRECT = [
+    gates(("x", 0)),
+    gates(("sdg", 0), ("h", 0)),
+    gates(("s", 0), ("h", 0), ("x", 1)),
+    gates(("s", 0), ("cx", 0, 1), ("h", 0), ("cx", 0, 1)),
+    gates(("t", 0), n=1),
+    gates(("x", 0), ("t", 0), n=1, measure=False),
+    gates(("h", 0), ("cx", 0, 1), ("rz", 0.3, 1), ("tdg", 0)),
+    evolution("XY", -0.5, 0.2, [0, 1], 2),
+    evolution("ZZ", 1.0, 0.3, [0, 1], 3),
+]
+
+
+@pytest.mark.parametrize("pbc", UPSTREAM_CORRECT)
+def test_converter_matches_upstream_where_upstream_is_correct(pbc, upstream_parse):
+    ours, theirs = list(iter_pbc(pbc)), upstream_parse(pbc)
+    assert len(ours) == len(theirs)
+    for o, t in zip(ours, theirs):
+        if "Measurement" in t:
+            assert o == t
+        else:
+            assert o["Rotation"]["basis"] == t["Rotation"]["basis"]
+            assert float(o["Rotation"]["angle"]) == pytest.approx(
+                -2 * float(t["Rotation"]["angle"])
+            )
+
+
+def test_angle_bug(upstream_parse):
+    c = QuantumCircuit(1)
+    c.t(0)
+    pbc = litinski(c)
+    assert float(upstream_parse(pbc)[0]["Rotation"]["angle"]) == pytest.approx(math.pi / 8)
+    assert float(next(iter_pbc(pbc))["Rotation"]["angle"]) == -math.pi / 4  # T = exp(-i·π/8·Z)
+
+
+def test_qubit_index_bug(upstream_parse):
+    c = QuantumCircuit(3)
+    c.t(2)
+    pbc = litinski(c)
+    assert upstream_parse(pbc)[0]["Rotation"]["basis"] == ["Z", "I", "I"]
+    assert next(iter_pbc(pbc))["Rotation"]["basis"] == ["I", "I", "Z"]
+
+
+def test_pauli_product_rotations_match_evolutions():
+    c = QuantumCircuit(3)
+    c.h(1)
+    c.cx(0, 2)
+    c.rz(0.3, 2)
+    c.t(1)
+    c.x(0)
+    c.tdg(0)
+    assert list(iter_pbc(litinski(c, use_ppr=True))) == list(iter_pbc(litinski(c)))
+
+
+def test_eq25_matches_paper():
+    # Tour de gross Sec. 4, TFIM on 100 qubits: 10 two-gross modules + 1e-3 two-gross factory.
+    assert physical_qubits("two-gross", 1e-3, 10) == 8138
+    # The paper's gross figure (4817) is 16 higher: it uses a' = 29, Table 3 gives 13 at 1e-4.
+    assert physical_qubits("gross", 1e-4, 10) == 4801
+
+
+def test_rejects_unsupported_error_rate():
+    with pytest.raises(ValueError, match="1e-3 and 1e-4"):
+        estimate_bicycle(qft(4), replace(A, physical_error_rate=5e-4))
+
+
+def test_missing_binary_fails_clearly(tmp_path):
+    with pytest.raises(FileNotFoundError, match="cargo build"):
+        estimate_bicycle(qft(4), replace(A, compiler_dir=str(tmp_path)))
+
+
+@needs_compiler
+@pytest.mark.parametrize("code,passes", [("gross", False), ("two-gross", True)])
+def test_pass_rule(code, passes):
+    r = estimate_bicycle(qft(4), replace(A, bicycle_code=code))
+    b = r["error_breakdown"]
+    assert b["synthesis"] == pytest.approx(A.error_budget / 3)  # 9 rotations × eps
+    assert b["total"] == r["error"] == b["instructions"] + b["synthesis"]
+    assert r["passes"] is passes is (b["total"] <= A.error_budget)
+
+
+@needs_compiler
+def test_deterministic():
+    assert estimate_bicycle(qft(8), A) == estimate_bicycle(qft(8), A)
+
+
+@needs_compiler
+@pytest.mark.parametrize("circuit", [qft(4), qft(8), pauli_evolution()])
+def test_logical_counts_match_surface(circuit):
+    bicycle, surface = estimate_bicycle(circuit, A), estimate_surface(circuit, A)
+    keys = ("t_count", "rotation_count", "measurements", "synthesis_epsilon")
+    assert [bicycle[k] for k in keys] == [surface[k] for k in keys]
+    assert surface["ts_per_rotation"] == math.ceil(bicycle["ts_per_rotation"])
+    assert bicycle["instruction_counts"]["t_injs"] == pytest.approx(
+        bicycle["t_count"] + bicycle["rotation_count"] * bicycle["ts_per_rotation"]
+    )
+
+
+@needs_compiler
+def test_runtime_linear_in_timestep():
+    runs = [estimate_bicycle(qft(4), replace(A, timestep_ns=t)) for t in (50, 66.7, 100)]
+    assert len({r["timesteps"] for r in runs}) == 1
+    for r, t in zip(runs, (50, 66.7, 100)):
+        assert r["runtime_ns"] == pytest.approx(r["timesteps"] * t)

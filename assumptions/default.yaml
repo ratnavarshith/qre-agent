@@ -13,6 +13,7 @@ error_budget: 1.0e-3
 synthesis: gridsynth
 bicycle:
   code: two-gross  # gross or two-gross
+  timestep_ns: 66.7  # 400 ns surface cycle / 6 timesteps per surface cycle (Tour de gross Sec. 2.5)
   compiler_dir: C:/Users/kolac/GitHub/qldpc/bicycle-architecture-compiler/target/release
   cache_dir: cache  # measurement tables; relative to the repo root
 transpile:

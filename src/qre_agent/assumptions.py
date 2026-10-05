@@ -18,6 +18,7 @@ class Assumptions:
     error_budget: float
     synthesis: str
     bicycle_code: str
+    timestep_ns: float
     compiler_dir: str
     cache_dir: str
     basis_gates: tuple[str, ...]
@@ -35,6 +36,7 @@ def load_assumptions(path=DEFAULT_PATH):
     return Assumptions(
         **raw,
         bicycle_code=b["code"],
+        timestep_ns=b["timestep_ns"],
         compiler_dir=b["compiler_dir"],
         cache_dir=str(REPO_ROOT / b["cache_dir"]),
         basis_gates=tuple(t["basis_gates"]),
