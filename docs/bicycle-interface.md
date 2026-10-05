@@ -236,7 +236,9 @@ Note: the paper's own surface-code comparison (§A.10) uses 2d² qubits per patc
 7. **Lookup tables.** Cache them in a gitignored `cache/` folder in this repo, with the path in config. Never write them inside the compiler repo.
 8. **Upstream issue #26.** A comment on the qubit-index bug is drafted in `notes/bicycle-issue26-index-bug.md` (not posted).
 
-### Still open (small)
+9. **Operator norm vs diamond.** Gridsynth's ε is an operator-norm bound, while the budget and pass rule are diamond-distance union bounds. The compiler therefore gets `--accuracy ε/2`, and the v3 pin uses gridsynth's count at ε/2.
+10. **Synthesis modes.** `synthesis: gridsynth` (default, main results) pins v3 to `ceil(mean gridsynth T count at ε/2)` over the circuit's actual rotation angles and calls v3 with `max_error = budget − rotations·ε`. `synthesis: native` keeps v3's own mixed-fallback search over the whole budget, as a secondary table. With no rotations, gridsynth mode falls back to v3's default query (there is no synthesis to pay for).
 
-- **Operator norm vs diamond.** Gridsynth's ε is operator norm, while the budget and pass rule are diamond-distance union bounds; operator norm ε gives at most 2ε in diamond distance. Pass `--accuracy ε/2` to be strictly conservative (about +3 T per rotation), or use ε as-is? I recommend ε/2.
+### Notes
+
 - **Correction to decision 6:** the 10× mismatches are in the **gross** 1e-4 model, not two-gross. Two-gross 1e-4 matches the paper within rounding (e.g. T-injection error 1e-18 = 10^−24.4 + P_C, where P_C = 1e-18). The flag still applies to the 1e-4 runs via gross_1e-4.

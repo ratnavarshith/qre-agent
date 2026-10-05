@@ -1,3 +1,7 @@
+import math
+from dataclasses import replace
+from pathlib import Path
+
 import pytest
 from circuits import pauli_evolution, qft
 from qiskit import transpile
@@ -5,7 +9,11 @@ from qiskit import transpile
 from qdk.qiskit import estimate as legacy_estimate
 from qre_agent import estimate_surface, load_assumptions
 
-A = load_assumptions()
+GRIDSYNTH = load_assumptions()
+A = replace(GRIDSYNTH, synthesis="native")  # the doc tables below are v3's own synthesis
+needs_compiler = pytest.mark.skipif(
+    not Path(GRIDSYNTH.compiler_dir).is_dir(), reason="bicycle compiler not built"
+)
 
 # Values from the comparison table in docs/qdk-interface.md (QFT8, default assumptions).
 DOC_QFT8_MIN_QUBITS = (156_545, 4_140_000, 25)
@@ -85,3 +93,20 @@ def test_logical_counts_match_legacy(name, circuit):
     assert (
         ours["logical_qubits"] == legacy["physicalCounts"]["breakdown"]["algorithmicLogicalQubits"]
     )
+
+
+@needs_compiler
+def test_gridsynth_mode_pins_ts_and_splits_budget():
+    r = estimate_surface(qft(8), GRIDSYNTH)
+    budget, rotations = GRIDSYNTH.error_budget, r["rotation_count"]
+    eps = budget / 3 / rotations
+    assert r["synthesis_epsilon"] == pytest.approx(eps)
+    # Ross-Selinger mean T count at operator-norm eps/2 (arXiv:2203.10064 Table 1): ~57.7 here
+    ts = r["ts_per_rotation"]
+    assert abs(ts - (3.02 * math.log2(2 / eps) + 1.77)) < 3
+    for p in r["frontier"]:
+        assert p["ts_per_rotation"] == ts
+        assert p["synthesis_error"] == pytest.approx(rotations * eps)
+        assert p["error"] - p["synthesis_error"] <= budget * 2 / 3
+        assert p["error"] <= budget
+    assert "bicycle_compiler" in r["versions"]

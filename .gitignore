@@ -36,3 +36,6 @@ notes/
 
 # Raw run outputs (final tables/plots go in results/, committed)
 runs/
+
+# Bicycle compiler measurement tables
+cache/

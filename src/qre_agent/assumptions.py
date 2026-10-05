@@ -3,7 +3,8 @@ from pathlib import Path
 
 import yaml
 
-DEFAULT_PATH = Path(__file__).resolve().parents[2] / "assumptions" / "default.yaml"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_PATH = REPO_ROOT / "assumptions" / "default.yaml"
 
 
 @dataclass(frozen=True)
@@ -15,6 +16,10 @@ class Assumptions:
     measurement_time_ns: int
     code_cycle_ns: int
     error_budget: float
+    synthesis: str
+    bicycle_code: str
+    compiler_dir: str
+    cache_dir: str
     basis_gates: tuple[str, ...]
     optimization_level: int
     seed: int
@@ -26,8 +31,12 @@ class Assumptions:
 def load_assumptions(path=DEFAULT_PATH):
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     t = raw.pop("transpile")
+    b = raw.pop("bicycle")
     return Assumptions(
         **raw,
+        bicycle_code=b["code"],
+        compiler_dir=b["compiler_dir"],
+        cache_dir=str(REPO_ROOT / b["cache_dir"]),
         basis_gates=tuple(t["basis_gates"]),
         optimization_level=t["optimization_level"],
         seed=t["seed"],

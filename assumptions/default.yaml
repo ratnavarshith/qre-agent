@@ -1,12 +1,20 @@
-# Surface-code assumptions for estimate_surface. Mirrors legacy qubit_gate_ns_e3 + surface_code
-# (see docs/qdk-interface.md for the legacy-to-v3 mapping).
+# Shared assumptions for estimate_surface and estimate_bicycle. Surface settings mirror legacy
+# qubit_gate_ns_e3 + surface_code (docs/qdk-interface.md); bicycle settings and the synthesis
+# matching are explained in docs/bicycle-interface.md.
 qec: surface_code
-physical_error_rate: 1.0e-3
+physical_error_rate: 1.0e-3  # bicycle supports only 1e-3 and 1e-4
 gate_time_ns: 50
 two_qubit_gate_time_ns: 50
 measurement_time_ns: 100
 code_cycle_ns: 400
 error_budget: 1.0e-3
+# gridsynth: both architectures pay gridsynth's T count at the same epsilon (1/3 of the budget);
+# native: surface uses v3's own mixed-fallback search over Ts per rotation.
+synthesis: gridsynth
+bicycle:
+  code: two-gross  # gross or two-gross
+  compiler_dir: C:/Users/kolac/GitHub/qldpc/bicycle-architecture-compiler/target/release
+  cache_dir: cache  # measurement tables; relative to the repo root
 transpile:
   basis_gates: [h, x, y, z, s, sdg, t, tdg, rx, ry, rz, cx, cz]
   optimization_level: 0
