@@ -165,3 +165,58 @@ def test_rescoring_with_code_constants_reproduces_numerics():
     assert r["instruction_counts"]["idles"] and r["instruction_counts"]["joint_measurements"]
     rescored = instruction_error(r["instruction_counts"], CODE_ERRORS[("gross", 1e-4)])
     assert rescored == pytest.approx(r["error_breakdown"]["instructions"], rel=1e-9)
+
+
+@needs_compiler
+def test_sub_export_precision_rotation_counted_the_same_on_both_sides():
+    # qasm3.dumps writes |angle| < 1e-9 as 0 and v3 drops it; the bicycle path never exports.
+    c = QuantumCircuit(1, 1)
+    c.rz(1e-10, 0)
+    c.rz(0.3, 0)
+    c.measure(0, 0)
+    assert estimate_surface(c, A)["rotation_count"] == estimate_bicycle(c, A)["rotation_count"] == 1
+
+
+@needs_compiler
+def test_large_angles_are_reduced_mod_2pi():
+    # QPE's controlled powers reach 2π/3·2^31, past the compiler's I32F96 angle range (±2^31).
+    c = QuantumCircuit(1, 1)
+    c.rz(2 * math.pi / 3 * 2**31, 0)
+    c.rz(2 * math.pi + math.pi / 4, 0)  # a T gate in disguise
+    c.measure(0, 0)
+    s, b = estimate_surface(c, A), estimate_bicycle(c, A)
+    assert (s["t_count"], s["rotation_count"]) == (b["t_count"], b["rotation_count"]) == (1, 1)
+
+
+@pytest.mark.parametrize("estimator", [estimate_surface, estimate_bicycle])
+def test_near_clifford_rotation_is_rejected(estimator):
+    # LitinskiTransformation silently treats angles within ~2.45e-6 of k·π/2 as Clifford.
+    c = QuantumCircuit(1, 1)
+    c.rz(math.pi / 2 + 1e-7, 0)
+    c.measure(0, 0)
+    with pytest.raises(ValueError, match="Clifford"):
+        estimator(c, A)
+
+
+@needs_compiler
+def test_dropped_rotations_are_accounted_in_the_error():
+    # Dropping rz(θ) for |θ| < 1e-9 costs at most |θ|/2 each (operator norm), added to the total.
+    c = QuantumCircuit(1, 1)
+    c.rz(1e-10, 0)
+    c.rz(-4e-10, 0)
+    c.rz(0.3, 0)
+    c.measure(0, 0)
+    bound = (1e-10 + 4e-10) / 2
+    s, b = estimate_surface(c, A), estimate_bicycle(c, A)
+    assert s["dropped_error"] == pytest.approx(bound)
+    assert b["dropped_error"] == b["error_breakdown"]["dropped"] == pytest.approx(bound)
+    assert b["error"] == pytest.approx(
+        b["error_breakdown"]["instructions"] + b["synthesis_error"] + bound
+    )
+    for p in s["frontier"]:
+        assert p["error"] <= A.error_budget
+        assert p["error"] >= p["synthesis_error"] + bound
+    clean = QuantumCircuit(1, 1)
+    clean.rz(0.3, 0)
+    clean.measure(0, 0)
+    assert estimate_surface(clean, A)["dropped_error"] == 0.0

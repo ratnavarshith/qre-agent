@@ -23,6 +23,12 @@ from .compiler import compiler_version, gridsynth_t_counts
 PACKAGES = ("qdk", "qiskit")
 NS = 1e-9
 ROTATIONS = ("rx", "ry", "rz")
+# qasm3.dumps writes |angle| < 1e-9 as 0 (qiskit pi_check eps) and v3 then drops the gate. We drop
+# such rotations explicitly for both architectures and charge |θ|/2 each to the error total.
+ZERO_ANGLE = 1e-9
+# LitinskiTransformation (bicycle path) treats rotations within ~2.4495e-6 of a multiple of π/2 as
+# Clifford (measured on qiskit 2.5.2) while v3 counts them, so such circuits are rejected.
+CLIFFORD_TOL = 2.45e-6
 SYNTHESIS_SHARE = 1 / 3  # legacy convention: rotation synthesis gets a third of the budget
 
 
@@ -36,6 +42,35 @@ def _logical_counts(trace):
     return t, rotations, measurements
 
 
+def prepare(circuit, a):
+    """Transpile to the fixed basis, reduce rotation angles mod 2π (a global phase only) and drop
+    rotations too small to survive the QASM export. Both architectures estimate this circuit.
+    Returns it with the error bound of the dropped rotations: sum of |θ|/2 (operator norm)."""
+    transpiled = transpile(
+        circuit,
+        basis_gates=list(a.basis_gates),
+        optimization_level=a.optimization_level,
+        seed_transpiler=a.seed,
+    )
+    prepared = transpiled.copy_empty_like()
+    dropped = 0.0
+    for inst in transpiled.data:
+        op = inst.operation
+        if op.name in ROTATIONS:
+            theta = math.remainder(float(op.params[0]), 2 * math.pi)
+            if abs(theta) < ZERO_ANGLE:
+                dropped += abs(theta) / 2
+                continue
+            if ZERO_ANGLE <= abs(math.remainder(theta, math.pi / 2)) < CLIFFORD_TOL:
+                raise ValueError(
+                    f"{op.name}({theta}) is within {CLIFFORD_TOL} of a Clifford angle; "
+                    "LitinskiTransformation would drop it on the bicycle path"
+                )
+            op = type(op)(theta)
+        prepared.append(op, inst.qubits, inst.clbits)
+    return prepared, dropped
+
+
 def _rotation_angles(prepared):
     """Angles phi of the non-T rotations in the exp(i·phi/2·P) convention (rz(t) = exp(-i·t/2·Z))."""
     angles = [-float(i.operation.params[0]) for i in prepared.data if i.operation.name in ROTATIONS]
@@ -46,7 +81,7 @@ def _native_synthesis_error(rotations, ts):
     return rotations * 2 ** ((4.86 - ts) / 0.53)  # v3's mixed-fallback fit, qre psspc.rs
 
 
-def _point(entry, rotations, synthesis_error):
+def _point(entry, rotations, synthesis_error, dropped):
     props = {property_name(k): v for k, v in entry.properties.items()}
     ls = entry.source.get(LATTICE_SURGERY).instruction
     ts = props["NUM_TS_PER_ROTATION"]
@@ -54,13 +89,14 @@ def _point(entry, rotations, synthesis_error):
         synthesis_error, extra = _native_synthesis_error(rotations, ts), 0.0
     else:  # gridsynth: v3 ran on the remaining budget, so add our synthesis share back
         extra = synthesis_error
+    extra += dropped
     return {
         "physical_qubits": entry.qubits,
         "runtime_ns": entry.runtime,
         "physical_qubit_seconds": entry.qubits * entry.runtime * NS,
         "distance": ls.get_property(property_name_to_key("DISTANCE")),
         "logical_qubits": props["LOGICAL_COMPUTE_QUBITS"],
-        "ts_per_rotation": ts,
+        "ts_per_rotation": ts if rotations else None,  # arbitrary tie without rotations
         "synthesis_error": synthesis_error,
         "error": entry.error + extra,
     }
@@ -84,12 +120,7 @@ def estimate_surface(circuit, assumptions=None):
     if a.synthesis not in ("gridsynth", "native"):
         raise ValueError(f"unsupported synthesis mode: {a.synthesis}")
 
-    prepared = transpile(
-        circuit,
-        basis_gates=list(a.basis_gates),
-        optimization_level=a.optimization_level,
-        seed_transpiler=a.seed,
-    )
+    prepared, dropped = prepare(circuit, a)
     app = OpenQASMApplication(qasm3.dumps(prepared))
     t_count, rotations, measurements = _logical_counts(app.get_trace())
 
@@ -109,9 +140,9 @@ def estimate_surface(circuit, assumptions=None):
         arch,
         sc * RoundBasedFactory.q(code_query=sc),
         trace_query,
-        max_error=a.error_budget - (synthesis_error or 0.0),
+        max_error=a.error_budget - (synthesis_error or 0.0) - dropped,
     )
-    points = [_point(e, rotations, synthesis_error) for e in table]
+    points = [_point(e, rotations, synthesis_error, dropped) for e in table]
     if not points:
         raise RuntimeError("estimator returned no results within the error budget")
 
@@ -125,6 +156,7 @@ def estimate_surface(circuit, assumptions=None):
         "rotation_count": rotations,
         "measurements": measurements,
         "synthesis_epsilon": eps,
+        "dropped_error": dropped,
         "min_qubits": min(points, key=lambda p: (p["physical_qubits"], p["runtime_ns"])),
         "min_runtime": min(points, key=lambda p: (p["runtime_ns"], p["physical_qubits"])),
         "frontier": points,

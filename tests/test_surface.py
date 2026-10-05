@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from circuits import pauli_evolution, qft
-from qiskit import transpile
+from qiskit import QuantumCircuit, transpile
 
 from qdk.qiskit import estimate as legacy_estimate
 from qre_agent import estimate_surface, load_assumptions
@@ -110,3 +110,16 @@ def test_gridsynth_mode_pins_ts_and_splits_budget():
         assert p["error"] - p["synthesis_error"] <= budget * 2 / 3
         assert p["error"] <= budget
     assert "bicycle_compiler" in r["versions"]
+
+
+@pytest.mark.parametrize("assumptions", [A, GRIDSYNTH], ids=["native", "gridsynth"])
+def test_ts_per_rotation_is_none_without_rotations(assumptions):
+    # With no rotations v3's Ts-per-rotation is an arbitrary tie that varies between processes.
+    c = QuantumCircuit(2, 2)
+    c.t(0)
+    c.cx(0, 1)
+    c.measure([0, 1], [0, 1])
+    r = estimate_surface(c, assumptions)
+    assert r["rotation_count"] == 0
+    assert r["ts_per_rotation"] is None
+    assert all(p["ts_per_rotation"] is None for p in r["frontier"])

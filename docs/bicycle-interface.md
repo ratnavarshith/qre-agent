@@ -82,6 +82,14 @@ Optionally it could also accept `pauli_product_rotation` (φ = −θ). With it, 
 3. `PauliEvolutionGate(SparsePauliOp("XY", coeffs=[-0.5]), time=0.2)` on `[1,2]` of 3 → basis `["I","Y","X"]`, angle `+0.2` (raw: `["Y","X","I"]`, `-0.1`).
 4. Measurement of −Y (`s; h; measure`) → `["Y"]`, `flip_result: true`. This is a regression guard; it passes on raw too.
 
+### Shared circuit preparation (`surface.prepare`)
+
+Both estimators start from the same prepared circuit: a transpile to the fixed basis, then three angle rules. Each rule exists because one side would otherwise silently see a different circuit:
+
+- **Angles are reduced mod 2π.** That changes only the global phase. QPE's controlled powers reach 2π/3·2³¹, past the compiler's `I32F96` range (±2³¹), where it panics with `parse error: overflow`.
+- **Rotations with |angle| < 1e-9 are dropped, and charged to the error.** `qasm3.dumps` writes them as `0` (`pi_check` eps 1e-9) and v3 then drops them, while the bicycle path never exports. Each dropped rotation adds |θ|/2 (operator-norm distance from the identity, after the mod-2π reduction) to the total; both estimators return the sum as `dropped_error` (also in the bicycle `error_breakdown`) and v3 runs with it subtracted from `max_error`. It is 0 for every circuit in `results/comparison`. QFT32 has three of these.
+- **Rotations within 2.45e-6 of a multiple of π/2 are rejected with an error.** `LitinskiTransformation` treats them as Clifford and drops them, even at `approximation_degree=1.0`. I measured the threshold at 2.4495e-6 on qiskit 2.5.2. v3 counts them, so on QFT32 the bicycle side saw 231 fewer rotations. Dropping them would be an approximate-QFT choice whose error isn't accounted for, so we fail loudly instead. This caps QFT and QPE at n = 20, whose smallest rotation is π/2²⁰ ≈ 3.0e-6.
+
 ## 3. Compiler and numerics output
 
 **Compiler stdout:** one line per input PBC op, e.g. `[[0,{"Measure":…}],[0,{"Automorphism":{"x":3,"y":2}}],…,[[0,{"JointMeasure":…}],[1,{"JointMeasure":…}]]]`. Each element is a list of `(module, instruction)`, and paired entries are inter-module ops. The instructions emitted are `Measure`, `JointMeasure`, `Automorphism` and `TGate`. Each rotation compiles to:
@@ -246,3 +254,4 @@ Note: the paper's own surface-code comparison (§A.10) uses 2d² qubits per patc
 ## Open gaps
 
 - **p=1e-4 compares factories as much as architectures.** The two-gross 1e-4 result is dominated by the paper's distillation factory: 18,600 qubits (92–96% of the total on QFT 4–16), output error 6e-25, which the paper itself calls "very conservative". The paper uses cultivation only at p=1e-3, because the cultivation reference gives no end-to-end estimates at p=1e-4 (Tour de gross §2.5, Table 3). The surface side uses v3's own factory search (`RoundBasedFactory`). See `results/qft_comparison/table.md`.
+- **QFT and QPE stop at n = 20 (kept for now, by decision).** Larger sizes contain rotations within Litinski's Clifford tolerance, and `prepare` rejects them (see "Shared circuit preparation"). Going further needs an explicit approximate-QFT rule (drop rotations below some angle on both sides) with its error added to the budget.

@@ -78,7 +78,7 @@ def estimate_bicycle(circuit, assumptions=None):
     if p not in MODELS:
         raise ValueError(f"bicycle supports physical error rates 1e-3 and 1e-4 only, got {p}")
 
-    ops = to_pbc(circuit, a)
+    ops, dropped = to_pbc(circuit, a)
     if not ops:
         raise ValueError("circuit has no non-Clifford rotations or measurements")
     n = len(ops[0].get("Rotation", ops[0].get("Measurement"))["basis"])
@@ -106,7 +106,7 @@ def estimate_bicycle(circuit, assumptions=None):
     timesteps = int(rows[-1]["end_time"])
     instruction_error = float(rows[-1]["total_error"])  # additive, excludes synthesis
     synthesis_error = rotations * eps
-    error = instruction_error + synthesis_error
+    error = instruction_error + synthesis_error + dropped
 
     modules = math.ceil(n / DATA_QUBITS_PER_MODULE)
     qubits = physical_qubits(code, p, modules)
@@ -119,6 +119,7 @@ def estimate_bicycle(circuit, assumptions=None):
         "logical_qubits": LOGICAL_QUBITS_PER_MODULE * modules,
         "ts_per_rotation": sum(synth_ts) / len(synth_ts) if synth_ts else None,
         "synthesis_error": synthesis_error,
+        "dropped_error": dropped,
         "error": error,
     }
     return {
@@ -127,6 +128,7 @@ def estimate_bicycle(circuit, assumptions=None):
         "error_breakdown": {
             "instructions": instruction_error,
             "synthesis": synthesis_error,
+            "dropped": dropped,
             "total": error,
             "budget": budget,
         },

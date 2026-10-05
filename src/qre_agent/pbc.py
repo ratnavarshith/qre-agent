@@ -5,21 +5,18 @@ PauliEvolutionGate and puts rotations on the wrong qubits. The compiler's conven
 exp(i·phi/2·P). See docs/bicycle-interface.md.
 """
 
-from qiskit import transpile
 from qiskit.transpiler.passes import LitinskiTransformation, RemoveBarriers
+
+from .surface import prepare
 
 PAULIS = "IXZY"  # indexed by 2·z + x
 
 
 def to_pbc(circuit, a):
-    """Transpile like estimate_surface, then Litinski-transform to Pauli rotations and measurements."""
-    prepared = transpile(
-        circuit,
-        basis_gates=list(a.basis_gates),
-        optimization_level=a.optimization_level,
-        seed_transpiler=a.seed,
-    )
-    return list(iter_pbc(LitinskiTransformation(fix_clifford=False)(RemoveBarriers()(prepared))))
+    """Prepare like estimate_surface, then Litinski-transform to Pauli rotations and measurements."""
+    prepared, dropped = prepare(circuit, a)
+    pbc = LitinskiTransformation(fix_clifford=False)(RemoveBarriers()(prepared))
+    return list(iter_pbc(pbc)), dropped
 
 
 def _basis(pbc, inst, pauli):
