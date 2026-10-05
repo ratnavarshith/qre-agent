@@ -4,7 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from circuits import pauli_evolution, qft
+from circuits import pauli_evolution
 from qiskit import QuantumCircuit
 from qiskit.circuit.library import PauliEvolutionGate
 from qiskit.quantum_info import SparsePauliOp
@@ -12,6 +12,7 @@ from qiskit.transpiler.passes import LitinskiTransformation
 
 from qre_agent import estimate_bicycle, estimate_surface, load_assumptions
 from qre_agent.bicycle import CODE_ERRORS, instruction_error, physical_qubits
+from qre_agent.circuits import qft
 from qre_agent.pbc import iter_pbc
 
 A = load_assumptions()

@@ -1,13 +1,6 @@
 from qiskit import QuantumCircuit
-from qiskit.circuit.library import PauliEvolutionGate, QFTGate
+from qiskit.circuit.library import PauliEvolutionGate
 from qiskit.quantum_info import SparsePauliOp
-
-
-def qft(n):
-    c = QuantumCircuit(n)
-    c.append(QFTGate(n), range(n))
-    c.measure_all()
-    return c
 
 
 def pauli_evolution():

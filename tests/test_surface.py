@@ -3,11 +3,12 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from circuits import pauli_evolution, qft
+from circuits import pauli_evolution
 from qiskit import QuantumCircuit, transpile
 
 from qdk.qiskit import estimate as legacy_estimate
 from qre_agent import estimate_surface, load_assumptions
+from qre_agent.circuits import qft
 
 GRIDSYNTH = load_assumptions()
 A = replace(GRIDSYNTH, synthesis="native")  # the doc tables below are v3's own synthesis
