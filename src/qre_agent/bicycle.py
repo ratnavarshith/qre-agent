@@ -3,6 +3,7 @@ arXiv:2506.03094). See docs/bicycle-interface.md for the inputs, units and decis
 
 import csv
 import io
+import json
 import math
 from importlib.metadata import version
 
@@ -13,7 +14,9 @@ from .surface import NS, PACKAGES, SYNTHESIS_SHARE
 
 MODELS = {1e-3: "1e-3", 1e-4: "1e-4"}  # the only physical error rates bicycle_numerics models
 MODULE = {"gross": (288, 90, 22), "two-gross": (576, 158, 34)}  # c, u, a: paper Table 1
-FACTORY = {  # f, a' per (code, p): paper Tables 1 and 3
+# f, a' per (code, p): paper Tables 1 and 3. Cultivation factories at 1e-3, distillation at 1e-4
+# (Sec. 2.5); the 1e-4 two-gross one is 15-to-1 at d=25, hence its 18,600 qubits.
+FACTORY = {
     ("gross", 1e-3): (454, 29),
     ("gross", 1e-4): (810, 13),
     ("two-gross", 1e-3): (463, 29),
@@ -24,12 +27,43 @@ DATA_QUBITS_PER_MODULE = 11  # plus one pivot
 LOGICAL_QUBITS_PER_MODULE = 12
 COUNTS = ("t_injs", "measurements", "joint_measurements", "automorphisms", "idles")
 
+# Per-instruction logical error rates for re-scoring a run without recompiling. CODE_ERRORS copies
+# bicycle_numerics/src/model.rs; PAPER_ERRORS swaps in the two gross 1e-4 rates that are 10x off
+# from paper Table 2 (the rest agree within rounding). Timings are left as in the code.
+CODE_ERRORS = {
+    ("gross", 1e-4): {
+        "idle": 1.44e-15,
+        "shift": 6.07e-14,
+        "measurement": 1.01e-9,
+        "joint_measurement": 4.81e-8,
+        "t_inj": 8.79e-7,
+    },
+}
+PAPER_ERRORS = {
+    ("gross", 1e-4): {
+        **CODE_ERRORS[("gross", 1e-4)],
+        "shift": 10**-12.2,
+        "t_inj": 10**-7.4 + 10**-7.3,  # P_factory + P_C
+    },
+}
+
 
 def physical_qubits(code, p, modules):
     """Paper Eq. 25: q = M(c + u + a) - a + a' + f, a 1D chain of M modules and one factory."""
     c, u, a = MODULE[code]
     f, a_factory = FACTORY[(code, p)]
     return modules * (c + u + a) - a + a_factory + f
+
+
+def instruction_error(counts, errors):
+    """Additive instruction error as bicycle_numerics computes it (an automorphism costs 2 shifts)."""
+    return (
+        counts["idles"] * errors["idle"]
+        + 2 * counts["automorphism_instructions"] * errors["shift"]
+        + counts["measurements"] * errors["measurement"]
+        + counts["joint_measurements"] * errors["joint_measurement"]
+        + counts["t_injs"] * errors["t_inj"]
+    )
 
 
 def _is_t(op):
@@ -66,6 +100,9 @@ def estimate_bicycle(circuit, assumptions=None):
     if len(rows) != len(ops):
         raise RuntimeError(f"numerics returned {len(rows)} rows for {len(ops)} ops")
     counts = {k: sum(int(r[k]) for r in rows) for k in COUNTS}
+    counts["automorphism_instructions"] = sum(
+        "Automorphism" in op[0][1] for line in lines for op in json.loads(line)
+    )
     timesteps = int(rows[-1]["end_time"])
     instruction_error = float(rows[-1]["total_error"])  # additive, excludes synthesis
     synthesis_error = rotations * eps

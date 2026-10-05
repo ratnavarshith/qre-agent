@@ -11,7 +11,7 @@ from qiskit.quantum_info import SparsePauliOp
 from qiskit.transpiler.passes import LitinskiTransformation
 
 from qre_agent import estimate_bicycle, estimate_surface, load_assumptions
-from qre_agent.bicycle import physical_qubits
+from qre_agent.bicycle import CODE_ERRORS, instruction_error, physical_qubits
 from qre_agent.pbc import iter_pbc
 
 A = load_assumptions()
@@ -156,3 +156,12 @@ def test_runtime_linear_in_timestep():
     assert len({r["timesteps"] for r in runs}) == 1
     for r, t in zip(runs, (50, 66.7, 100)):
         assert r["runtime_ns"] == pytest.approx(r["timesteps"] * t)
+
+
+@needs_compiler
+def test_rescoring_with_code_constants_reproduces_numerics():
+    # QFT16 spans two modules, so idles and joint measurements are exercised too.
+    r = estimate_bicycle(qft(16), replace(A, bicycle_code="gross", physical_error_rate=1e-4))
+    assert r["instruction_counts"]["idles"] and r["instruction_counts"]["joint_measurements"]
+    rescored = instruction_error(r["instruction_counts"], CODE_ERRORS[("gross", 1e-4)])
+    assert rescored == pytest.approx(r["error_breakdown"]["instructions"], rel=1e-9)

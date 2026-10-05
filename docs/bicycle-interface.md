@@ -242,3 +242,7 @@ Note: the paper's own surface-code comparison (§A.10) uses 2d² qubits per patc
 ### Notes
 
 - **Correction to decision 6:** the 10× mismatches are in the **gross** 1e-4 model, not two-gross. Two-gross 1e-4 matches the paper within rounding (e.g. T-injection error 1e-18 = 10^−24.4 + P_C, where P_C = 1e-18). The flag still applies to the 1e-4 runs via gross_1e-4.
+
+## Open gaps
+
+- **p=1e-4 compares factories as much as architectures.** The two-gross 1e-4 result is dominated by the paper's distillation factory: 18,600 qubits (92–96% of the total on QFT 4–16), output error 6e-25, which the paper itself calls "very conservative". The paper uses cultivation only at p=1e-3, because the cultivation reference gives no end-to-end estimates at p=1e-4 (Tour de gross §2.5, Table 3). The surface side uses v3's own factory search (`RoundBasedFactory`). See `results/qft_comparison/table.md`.
