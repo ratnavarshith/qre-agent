@@ -63,7 +63,9 @@ def prepare(circuit):
 
 def run_legacy(circuit, skip_transpilation):
     # The backend's own transpile is unseeded by default; seed it so that row is reproducible.
-    r = legacy_estimate(circuit, LEGACY_PARAMS, skip_transpilation=skip_transpilation, seed_transpiler=0)
+    r = legacy_estimate(
+        circuit, LEGACY_PARAMS, skip_transpilation=skip_transpilation, seed_transpiler=0
+    )
     lc, pc = r["logicalCounts"], r["physicalCounts"]
     return {
         "logical_qubits": pc["breakdown"]["algorithmicLogicalQubits"],
@@ -110,15 +112,28 @@ def run_v3(circuit):
     return v3_row(min_q, logical), v3_row(min_t, logical), len(table), rest
 
 
-COLS = ["logical_qubits", "t", "rotations", "measurements", "physical_qubits", "runtime_ns",
-        "distance", "factories", "ts_per_rotation"]
+COLS = [
+    "logical_qubits",
+    "t",
+    "rotations",
+    "measurements",
+    "physical_qubits",
+    "runtime_ns",
+    "distance",
+    "factories",
+    "ts_per_rotation",
+]
 
 
 def main():
     warnings.filterwarnings("ignore", category=DeprecationWarning)
-    print(f"python {platform.python_version()} | qdk {version('qdk')} | qiskit {version('qiskit')} | {platform.platform()}")
-    print(f"error budget {ERROR_BUDGET}; legacy {LEGACY_PARAMS['qubitParams']['name']}+surface_code; "
-          f"v3 GateBased(1e-3, 50ns, 100ns) + SurfaceCode(cycle 400ns) * RoundBasedFactory\n")
+    print(
+        f"python {platform.python_version()} | qdk {version('qdk')} | qiskit {version('qiskit')} | {platform.platform()}"
+    )
+    print(
+        f"error budget {ERROR_BUDGET}; legacy {LEGACY_PARAMS['qubitParams']['name']}+surface_code; "
+        f"v3 GateBased(1e-3, 50ns, 100ns) + SurfaceCode(cycle 400ns) * RoundBasedFactory\n"
+    )
 
     header = f"{'circuit':<11} {'path':<23}" + "".join(f"{c:>16}" for c in COLS)
     print(header)
@@ -134,27 +149,46 @@ def main():
         ]
         for path, r in rows:
             print(f"{name:<11} {path:<23}" + "".join(f"{r[k]:>16}" for k in COLS))
-        same = all(legacy[k] == v3_min_q[k] for k in ("logical_qubits", "t", "rotations", "measurements"))
-        print(f"{'':<11} logical counts reference vs v3: {'MATCH' if same else 'MISMATCH'}"
-              f"; v3 frontier size {frontier}; v3 gates outside T/rot/meas {rest}")
+        same = all(
+            legacy[k] == v3_min_q[k] for k in ("logical_qubits", "t", "rotations", "measurements")
+        )
+        print(
+            f"{'':<11} logical counts reference vs v3: {'MATCH' if same else 'MISMATCH'}"
+            f"; v3 frontier size {frontier}; v3 gates outside T/rot/meas {rest}"
+        )
         # Diagnostic: legacy with its own internal transpile is not reproducible, so report the spread.
         own = [run_legacy(c, skip_transpilation=False) for _ in range(OWN_TRANSPILE_RUNS)]
-        spread = {k: (min(r[k] for r in own), max(r[k] for r in own)) for k in ("t", "rotations", "physical_qubits")}
+        spread = {
+            k: (min(r[k] for r in own), max(r[k] for r in own))
+            for k in ("t", "rotations", "physical_qubits")
+        }
         print(f"{'':<11} legacy own transpile, {OWN_TRANSPILE_RUNS} runs, (min, max): {spread}\n")
 
     print("Floquet:")
     q = prepare(qft(4))
     for qubit in ("qubit_maj_ns_e4", "qubit_gate_ns_e3"):
         try:
-            r = legacy_estimate(q, {"qubitParams": {"name": qubit}, "qecScheme": {"name": "floquet_code"},
-                                    "errorBudget": ERROR_BUDGET}, skip_transpilation=True)
-            print(f"  legacy floquet_code + {qubit}: {r['physicalCounts']['physicalQubits']} qubits, "
-                  f"{r['physicalCounts']['runtime']} ns")
+            r = legacy_estimate(
+                q,
+                {
+                    "qubitParams": {"name": qubit},
+                    "qecScheme": {"name": "floquet_code"},
+                    "errorBudget": ERROR_BUDGET,
+                },
+                skip_transpilation=True,
+            )
+            print(
+                f"  legacy floquet_code + {qubit}: {r['physicalCounts']['physicalQubits']} qubits, "
+                f"{r['physicalCounts']['runtime']} ns"
+            )
         except EstimatorError as e:  # subclasses BaseException, not Exception
             print(f"  legacy floquet_code + {qubit}: ERROR {str(e).splitlines()[0][:120]}")
     import qdk.qre.models as m
+
     floquet = [n for n in m.__all__ if "floquet" in n.lower()]
-    print(f"  v3 qdk.qre.models Floquet classes: {floquet or 'none'} (available: {', '.join(m.__all__)})")
+    print(
+        f"  v3 qdk.qre.models Floquet classes: {floquet or 'none'} (available: {', '.join(m.__all__)})"
+    )
 
 
 if __name__ == "__main__":

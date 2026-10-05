@@ -26,3 +26,6 @@ line-length = 100
 
 [tool.ruff.lint.isort]
 known-first-party = ["qdk"]  # keeps the qiskit / qdk grouping used in scripts/
+
+[tool.ruff.format]
+exclude = ["*.md"]  # docs code blocks are illustrative, not formatted
