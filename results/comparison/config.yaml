@@ -1,0 +1,16 @@
+# Surface (v3) vs bicycle (gross, two-gross) across benchmark families. Regenerate with
+#   .venv/Scripts/python scripts/compare.py results/comparison/config.yaml
+# Everything not listed here comes from assumptions/default.yaml.
+assumptions: assumptions/default.yaml
+families:  # sizes per family; QFT and QPE stop at 20 (smaller angles hit Litinski's Clifford tolerance)
+  qft: [4, 8, 16, 20]
+  qpe: [4, 8, 16, 20]
+  adder: [4, 8, 16, 32, 64]
+  tfim: [4, 8, 16, 32, 64]
+  grover: [4, 8, 16, 32, 64]
+physical_error_rates: [1.0e-3, 1.0e-4]
+architectures: [surface, gross, two-gross]
+timestep_ns: 66.7
+timestep_sweep_ns: [50, 66.7, 100]
+# Re-score these (code, p) runs with paper Table 2 error rates (see bicycle.PAPER_ERRORS).
+paper_error_sensitivity: [[gross, 1.0e-4]]
