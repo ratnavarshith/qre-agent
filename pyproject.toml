@@ -9,7 +9,7 @@ requires-python = ">=3.10"
 dependencies = ["qdk[qiskit,qre]", "pyyaml"]
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff"]
+dev = ["matplotlib", "pytest", "ruff"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
