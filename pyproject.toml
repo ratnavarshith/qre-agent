@@ -20,6 +20,7 @@ qre_agent = ["py.typed"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+markers = ["compiler: needs the bicycle compiler binaries (skipped when they are not found)"]
 
 [tool.ruff]
 line-length = 100

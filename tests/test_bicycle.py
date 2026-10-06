@@ -16,10 +16,7 @@ from qre_agent.circuits import qft
 from qre_agent.pbc import iter_pbc
 
 A = load_assumptions()
-UPSTREAM_SCRIPTS = Path(A.compiler_dir).parents[1] / "scripts"
-needs_compiler = pytest.mark.skipif(
-    not Path(A.compiler_dir).is_dir(), reason="bicycle compiler not built"
-)
+UPSTREAM_SCRIPTS = Path(A.compiler_dir).parent.parent / "scripts"
 
 
 @pytest.fixture(scope="module")
@@ -124,7 +121,7 @@ def test_missing_binary_fails_clearly(tmp_path):
         estimate_bicycle(qft(4), replace(A, compiler_dir=str(tmp_path)))
 
 
-@needs_compiler
+@pytest.mark.compiler
 @pytest.mark.parametrize("code,passes", [("gross", False), ("two-gross", True)])
 def test_pass_rule(code, passes):
     r = estimate_bicycle(qft(4), replace(A, bicycle_code=code))
@@ -134,12 +131,12 @@ def test_pass_rule(code, passes):
     assert r["passes"] is passes is (b["total"] <= A.error_budget)
 
 
-@needs_compiler
+@pytest.mark.compiler
 def test_deterministic():
     assert estimate_bicycle(qft(8), A) == estimate_bicycle(qft(8), A)
 
 
-@needs_compiler
+@pytest.mark.compiler
 @pytest.mark.parametrize("circuit", [qft(4), qft(8), pauli_evolution()])
 def test_logical_counts_match_surface(circuit):
     bicycle, surface = estimate_bicycle(circuit, A), estimate_surface(circuit, A)
@@ -151,7 +148,7 @@ def test_logical_counts_match_surface(circuit):
     )
 
 
-@needs_compiler
+@pytest.mark.compiler
 def test_runtime_linear_in_timestep():
     runs = [estimate_bicycle(qft(4), replace(A, timestep_ns=t)) for t in (50, 66.7, 100)]
     assert len({r["timesteps"] for r in runs}) == 1
@@ -159,7 +156,7 @@ def test_runtime_linear_in_timestep():
         assert r["runtime_ns"] == pytest.approx(r["timesteps"] * t)
 
 
-@needs_compiler
+@pytest.mark.compiler
 def test_rescoring_with_code_constants_reproduces_numerics():
     # QFT16 spans two modules, so idles and joint measurements are exercised too.
     r = estimate_bicycle(qft(16), replace(A, bicycle_code="gross", physical_error_rate=1e-4))
@@ -168,7 +165,7 @@ def test_rescoring_with_code_constants_reproduces_numerics():
     assert rescored == pytest.approx(r["error_breakdown"]["instructions"], rel=1e-9)
 
 
-@needs_compiler
+@pytest.mark.compiler
 def test_sub_export_precision_rotation_counted_the_same_on_both_sides():
     # qasm3.dumps writes |angle| < 1e-9 as 0 and v3 drops it; the bicycle path never exports.
     c = QuantumCircuit(1, 1)
@@ -178,7 +175,7 @@ def test_sub_export_precision_rotation_counted_the_same_on_both_sides():
     assert estimate_surface(c, A)["rotation_count"] == estimate_bicycle(c, A)["rotation_count"] == 1
 
 
-@needs_compiler
+@pytest.mark.compiler
 def test_large_angles_are_reduced_mod_2pi():
     # QPE's controlled powers reach 2π/3·2^31, past the compiler's I32F96 angle range (±2^31).
     c = QuantumCircuit(1, 1)
@@ -199,7 +196,7 @@ def test_near_clifford_rotation_is_rejected(estimator):
         estimator(c, A)
 
 
-@needs_compiler
+@pytest.mark.compiler
 def test_dropped_rotations_are_accounted_in_the_error():
     # Dropping rz(θ) for |θ| < 1e-9 costs at most |θ|/2 each (operator norm), added to the total.
     c = QuantumCircuit(1, 1)

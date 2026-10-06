@@ -1,6 +1,5 @@
 import math
 from dataclasses import replace
-from pathlib import Path
 
 import pytest
 from circuits import pauli_evolution
@@ -12,9 +11,6 @@ from qre_agent.circuits import qft
 
 GRIDSYNTH = load_assumptions()
 A = replace(GRIDSYNTH, synthesis="native")  # the doc tables below are v3's own synthesis
-needs_compiler = pytest.mark.skipif(
-    not Path(GRIDSYNTH.compiler_dir).is_dir(), reason="bicycle compiler not built"
-)
 
 # Values from the comparison table in docs/qdk-interface.md (QFT8, default assumptions).
 DOC_QFT8_MIN_QUBITS = (156_545, 4_140_000, 25)
@@ -96,7 +92,7 @@ def test_logical_counts_match_legacy(name, circuit):
     )
 
 
-@needs_compiler
+@pytest.mark.compiler
 def test_gridsynth_mode_pins_ts_and_splits_budget():
     r = estimate_surface(qft(8), GRIDSYNTH)
     budget, rotations = GRIDSYNTH.error_budget, r["rotation_count"]

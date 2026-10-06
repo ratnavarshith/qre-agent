@@ -1,3 +1,4 @@
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -37,7 +38,7 @@ def load_assumptions(path=DEFAULT_PATH):
         **raw,
         bicycle_code=b["code"],
         timestep_ns=b["timestep_ns"],
-        compiler_dir=b["compiler_dir"],
+        compiler_dir=os.environ.get("QRE_COMPILER_DIR", b["compiler_dir"]),  # CI and other machines
         cache_dir=str(REPO_ROOT / b["cache_dir"]),
         basis_gates=tuple(t["basis_gates"]),
         optimization_level=t["optimization_level"],

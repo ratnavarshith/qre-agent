@@ -23,6 +23,7 @@ EXPECTED = {
 }
 
 
+@pytest.mark.compiler
 @pytest.mark.parametrize("family", FAMILIES)
 def test_logical_counts_match_hand_count_and_both_architectures(family):
     circuit = FAMILIES[family](4)
