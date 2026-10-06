@@ -18,7 +18,7 @@ from qdk.qre.instruction_ids import LATTICE_SURGERY
 from qdk.qre.models import GateBased, RoundBasedFactory, SurfaceCode
 
 from .assumptions import load_assumptions
-from .compiler import compiler_version, gridsynth_t_counts
+from .compiler import compiler_versions, gridsynth_t_counts
 
 PACKAGES = ("qdk", "qiskit")
 NS = 1e-9
@@ -148,7 +148,7 @@ def estimate_surface(circuit, assumptions=None):
 
     versions = {p: version(p) for p in PACKAGES}
     if eps is not None:
-        versions["bicycle_compiler"] = compiler_version(a)
+        versions.update(compiler_versions(a))
     best = min(points, key=lambda p: (p["physical_qubit_seconds"], p["physical_qubits"]))
     return {
         **best,

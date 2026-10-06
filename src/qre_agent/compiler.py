@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import tomllib
 from pathlib import Path
 
 EXE = ".exe" if os.name == "nt" else ""
@@ -54,5 +55,11 @@ def gridsynth_t_counts(a, angles, accuracy):
     return [t_injections(line) for line in out.splitlines()]
 
 
-def compiler_version(a):
-    return run(a, "bicycle_compiler", ["--version"]).split()[-1]
+def compiler_versions(a):
+    """Versions of the compiler and of the rsgridsynth in the Cargo.lock it was built from."""
+    versions = {"bicycle_compiler": run(a, "bicycle_compiler", ["--version"]).split()[-1]}
+    lock = Path(a.compiler_dir).parent.parent / "Cargo.lock"  # target/release -> repo root
+    if lock.is_file():
+        packages = tomllib.loads(lock.read_text(encoding="utf-8"))["package"]
+        versions["rsgridsynth"] = next(p["version"] for p in packages if p["name"] == "rsgridsynth")
+    return versions

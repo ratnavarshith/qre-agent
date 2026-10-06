@@ -8,7 +8,7 @@ import math
 from importlib.metadata import version
 
 from .assumptions import load_assumptions
-from .compiler import compile_pbc, compiler_version, run, t_injections
+from .compiler import compile_pbc, compiler_versions, run, t_injections
 from .pbc import to_pbc
 from .surface import NS, PACKAGES, SYNTHESIS_SHARE
 
@@ -146,6 +146,6 @@ def estimate_bicycle(circuit, assumptions=None):
         "assumptions": a.as_dict(),
         "versions": {
             **{pkg: version(pkg) for pkg in PACKAGES},
-            "bicycle_compiler": compiler_version(a),
+            **compiler_versions(a),
         },
     }

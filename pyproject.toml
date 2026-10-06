@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "qre-agent"
 version = "0.0.0"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = ["qdk[qiskit,qre]", "pyyaml"]
 
 [project.optional-dependencies]

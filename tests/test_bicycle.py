@@ -1,5 +1,6 @@
 import math
 import sys
+import tomllib
 from dataclasses import replace
 from pathlib import Path
 
@@ -218,3 +219,12 @@ def test_dropped_rotations_are_accounted_in_the_error():
     clean.rz(0.3, 0)
     clean.measure(0, 0)
     assert estimate_surface(clean, A)["dropped_error"] == 0.0
+
+
+@pytest.mark.compiler
+def test_versions_record_the_rsgridsynth_the_compiler_was_built_with():
+    # target/release/../../Cargo.lock is the lock the binaries were built from.
+    lock = tomllib.loads((Path(A.compiler_dir).parent.parent / "Cargo.lock").read_text("utf-8"))
+    expected = next(p["version"] for p in lock["package"] if p["name"] == "rsgridsynth")
+    for r in (estimate_bicycle(qft(4), A), estimate_surface(qft(4), A)):
+        assert r["versions"]["rsgridsynth"] == expected

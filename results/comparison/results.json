@@ -34,7 +34,8 @@
   "versions": {
    "qdk": "1.32.3",
    "qiskit": "2.5.2",
-   "bicycle_compiler": "0.2.1"
+   "bicycle_compiler": "0.2.1",
+   "rsgridsynth": "0.2.2"
   },
   "seeds": {
    "transpile": 0,
