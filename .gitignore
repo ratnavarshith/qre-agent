@@ -39,3 +39,6 @@ runs/
 
 # Bicycle compiler measurement tables
 cache/
+
+# IBM's compiler, cloned and built here (see README)
+bicycle-compiler/

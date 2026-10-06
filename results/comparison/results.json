@@ -11,8 +11,6 @@
    "synthesis": "gridsynth",
    "bicycle_code": "two-gross",
    "timestep_ns": 66.7,
-   "compiler_dir": "C:/Users/kolac/GitHub/qldpc/bicycle-architecture-compiler/target/release",
-   "cache_dir": "C:\\Users\\kolac\\GitHub\\qre-agent\\cache",
    "basis_gates": [
     "h",
     "x",
@@ -35,7 +33,9 @@
    "qdk": "1.32.3",
    "qiskit": "2.5.2",
    "bicycle_compiler": "0.2.1",
-   "rsgridsynth": "0.2.2"
+   "bicycle_compiler_commit": "bed7e8aba4cc0fb86311b7fa6dad6217c0fce7cb",
+   "rsgridsynth": "0.2.2",
+   "cargo_lock_sha256": "605a42f1b3414fe57ef0b3620b8bef1553480759228a94bd69f7799bb53e0101"
   },
   "seeds": {
    "transpile": 0,

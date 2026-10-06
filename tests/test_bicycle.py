@@ -1,4 +1,6 @@
+import hashlib
 import math
+import re
 import sys
 import tomllib
 from dataclasses import replace
@@ -228,3 +230,15 @@ def test_versions_record_the_rsgridsynth_the_compiler_was_built_with():
     expected = next(p["version"] for p in lock["package"] if p["name"] == "rsgridsynth")
     for r in (estimate_bicycle(qft(4), A), estimate_surface(qft(4), A)):
         assert r["versions"]["rsgridsynth"] == expected
+
+
+@pytest.mark.compiler
+def test_results_record_compiler_identity_not_machine_paths():
+    root = Path(A.compiler_dir).parent.parent
+    if not (root / ".git").exists():
+        pytest.skip("compiler directory is not a git checkout")
+    lock_sha = hashlib.sha256((root / "Cargo.lock").read_bytes()).hexdigest()
+    for r in (estimate_bicycle(qft(4), A), estimate_surface(qft(4), A)):
+        assert re.fullmatch(r"[0-9a-f]{40}(-dirty)?", r["versions"]["bicycle_compiler_commit"])
+        assert r["versions"]["cargo_lock_sha256"] == lock_sha
+        assert "compiler_dir" not in r["assumptions"]

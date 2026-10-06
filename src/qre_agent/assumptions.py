@@ -27,7 +27,13 @@ class Assumptions:
     seed: int
 
     def as_dict(self):
-        return asdict(self)
+        """For recording with results; the two directories are left out, they differ per machine."""
+        return {k: v for k, v in asdict(self).items() if k not in ("compiler_dir", "cache_dir")}
+
+
+def _resolve(path):
+    path = Path(path)
+    return str(path if path.is_absolute() else REPO_ROOT / path)
 
 
 def load_assumptions(path=DEFAULT_PATH):
@@ -38,8 +44,8 @@ def load_assumptions(path=DEFAULT_PATH):
         **raw,
         bicycle_code=b["code"],
         timestep_ns=b["timestep_ns"],
-        compiler_dir=os.environ.get("QRE_COMPILER_DIR", b["compiler_dir"]),  # CI and other machines
-        cache_dir=str(REPO_ROOT / b["cache_dir"]),
+        compiler_dir=_resolve(os.environ.get("QRE_COMPILER_DIR", b["compiler_dir"])),
+        cache_dir=_resolve(b["cache_dir"]),
         basis_gates=tuple(t["basis_gates"]),
         optimization_level=t["optimization_level"],
         seed=t["seed"],

@@ -1,5 +1,6 @@
 """Calls IBM's bicycle compiler binaries by path (never edited from here). See docs/bicycle-interface.md."""
 
+import hashlib
 import json
 import os
 import subprocess
@@ -14,7 +15,8 @@ def binary(a, name):
     if not path.is_file():
         raise FileNotFoundError(
             f"{path} not found. Build the compiler with "
-            "`cargo build --release -F bicycle_compiler/rsgridsynth` or fix bicycle.compiler_dir."
+            "`cargo build --release -F bicycle_compiler/rsgridsynth` or set QRE_COMPILER_DIR "
+            "(default: bicycle-compiler/target/release in the repo)."
         )
     return path
 
@@ -55,11 +57,23 @@ def gridsynth_t_counts(a, angles, accuracy):
     return [t_injections(line) for line in out.splitlines()]
 
 
+def _git(root, *args):
+    r = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=False)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
 def compiler_versions(a):
-    """Versions of the compiler and of the rsgridsynth in the Cargo.lock it was built from."""
+    """Identify the compiler build: version, git commit, and the Cargo.lock it was built from
+    (with the rsgridsynth version in it). Paths are not recorded, they differ per machine."""
+    root = Path(a.compiler_dir).parent.parent  # target/release -> repo root
     versions = {"bicycle_compiler": run(a, "bicycle_compiler", ["--version"]).split()[-1]}
-    lock = Path(a.compiler_dir).parent.parent / "Cargo.lock"  # target/release -> repo root
+    commit = _git(root, "rev-parse", "HEAD")
+    if commit:
+        dirty = _git(root, "status", "--porcelain", "--untracked-files=no")
+        versions["bicycle_compiler_commit"] = commit + ("-dirty" if dirty else "")
+    lock = root / "Cargo.lock"
     if lock.is_file():
         packages = tomllib.loads(lock.read_text(encoding="utf-8"))["package"]
         versions["rsgridsynth"] = next(p["version"] for p in packages if p["name"] == "rsgridsynth")
+        versions["cargo_lock_sha256"] = hashlib.sha256(lock.read_bytes()).hexdigest()
     return versions

@@ -47,7 +47,7 @@ The bicycle compiler is IBM's, and I call it by path without editing it. I used 
 cargo build --release -F bicycle_compiler/rsgridsynth
 ```
 
-Then set `bicycle.compiler_dir` in `assumptions/default.yaml` to its `target/release` folder (it currently holds my own path), or set the `QRE_COMPILER_DIR` environment variable. Tests that need the compiler are marked `compiler` and are skipped if it isn't found. Don't run the compiler's own `scripts/*.sh`; they rebuild without rsgridsynth. The compiler needs a Clifford lookup table per code, which takes about a minute to generate; it is made on first use and kept in `cache/` (gitignored).
+Then either clone and build it in a `bicycle-compiler/` folder inside this repo (where `assumptions/default.yaml` looks, and it is gitignored) or set the `QRE_COMPILER_DIR` environment variable to its `target/release` folder. Tests that need the compiler are marked `compiler` and are skipped if it isn't found. Don't run the compiler's own `scripts/*.sh`; they rebuild without rsgridsynth. The compiler needs a Clifford lookup table per code, which takes about a minute to generate; it is made on first use and kept in `cache/` (gitignored).
 
 Regenerate everything (table, JSON, both plots):
 
