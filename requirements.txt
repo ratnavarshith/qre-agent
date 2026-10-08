@@ -50,6 +50,8 @@ python-dateutil==2.9.0.post0
     # via
     #   matplotlib
     #   pandas
+python-dotenv==1.2.4
+    # via qre-agent (pyproject.toml)
 pyyaml==6.0.3
     # via qre-agent (pyproject.toml)
 qdk==1.32.3

@@ -6,7 +6,7 @@ Agent that turns a plain-English problem into fault-tolerant resource estimates 
 - You may push, open PRs, and post comments, but only after I've approved the exact text, and every such command must go through the ask prompt. Draft all public text (PR descriptions, issue comments, posts) into `notes/` first.
 - `notes/` is gitignored and holds drafts of public text only. Technical notes that should be committed go in `docs/`.
 - Commits go under my name only: Ratna Varshith Kolachala <kolachalavarshith@gmail.com>. No Co-Authored-By lines, no "Generated with" footers. Run `git log -5 --format=%B` before telling me a branch is ready.
-- LLM/API spend: before any call that costs money, tell me the budget (max tokens / max $ for the run) and get my OK. Track actual spend against it and stop if it would be exceeded.
+- Total LLM budget $55 (OpenRouter $45 prepaid, Anthropic $10 prepaid, no auto top-up). Cheap models for development; strong models only for final eval runs. Never read, print or log API keys. Keys live only in .env.
 - One change per branch/PR. Don't touch unrelated code or reformat files you didn't need to change.
 - Bug fixes: write the failing test first, show it fails, then fix.
 - Before saying anything is done, run the repo's own checks (tests, linters).

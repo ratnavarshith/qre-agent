@@ -1,0 +1,14 @@
+# Total LLM budget $55: OpenRouter $45 prepaid, Anthropic $10 prepaid, no auto top-up.
+# Caps in dollars per phase; src/qre_agent/spend.py refuses any call that could go over.
+caps:
+  dev: 10
+  eval: 25
+  phase3: 12
+  ci: 3
+  demo: 5
+
+# USD per 1M tokens, keyed by the model id as passed to the client.
+# input_tokens counts all prompt tokens, cached ones included; cached_input is the price of those.
+# A model without an entry here is refused. Example:
+#   anthropic/claude-haiku-5-5: {input: 0.0, cached_input: 0.0, output: 0.0}
+prices: {}
