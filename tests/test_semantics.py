@@ -25,6 +25,25 @@ def test_qft_accepts_with_and_without_swaps():
     assert semantics.check("qft", qft_no_swaps(4), 4) is None
 
 
+def test_qft_swaps_can_be_required_or_forbidden():
+    with_swaps, without = FAMILIES["qft"](4), qft_no_swaps(4)
+    assert semantics.qft(with_swaps, 4, swaps=True) is None
+    assert semantics.qft(without, 4, swaps=False) is None
+    assert semantics.qft(without, 4, swaps=True) is not None
+    assert semantics.qft(with_swaps, 4, swaps=False) is not None
+
+
+def test_same_state_up_to_global_phase():
+    a, b, c = QuantumCircuit(2), QuantumCircuit(2), QuantumCircuit(2)
+    a.h(0), a.cx(0, 1)
+    b.h(0), b.cx(0, 1)
+    b.global_phase = 0.7
+    c.h(0), c.cz(0, 1)
+    assert semantics.same_state(b, a) is None
+    assert semantics.same_state(c, a) is not None
+    assert semantics.same_state(QuantumCircuit(3), a) == "expected 2 qubits, got 3"
+
+
 @pytest.mark.parametrize("change", ["inverse", "angle", "width"])
 def test_qft_rejects_other_unitaries(change):
     c = QuantumCircuit(4)

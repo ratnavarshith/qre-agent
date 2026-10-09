@@ -6,6 +6,8 @@ passes, else the reason. See docs/agent-design.md.
 - adder: classical simulation on a few basis inputs gives a + b.
 - grover: the instruction named "oracle" flips the phase of exactly one data state.
 - qpe, tfim: T and rotation counts within a tolerance of the benchmark circuit's (no semantics).
+
+The eval's free-form tasks also use same_state and counts_close_to against a reference circuit.
 """
 
 import random
@@ -32,7 +34,8 @@ def _unitary(circuit):
     return circuit.remove_final_measurements(inplace=False)
 
 
-def qft(circuit, n):
+def qft(circuit, n, swaps=None):
+    """`swaps`: True requires the final swaps, False requires none, None accepts either."""
     if circuit.num_qubits != n:
         return f"expected {n} qubits, got {circuit.num_qubits}"
     reference = QuantumCircuit(n)
@@ -41,9 +44,12 @@ def qft(circuit, n):
     for i in range(n // 2):
         no_swaps.swap(i, n - 1 - i)
     u = Operator(_unitary(circuit))
-    if u.equiv(Operator(reference)) or u.equiv(Operator(no_swaps)):
+    if swaps is not False and u.equiv(Operator(reference)):
         return None
-    return "unitary is not the QFT, with or without the final swaps"
+    if swaps is not True and u.equiv(Operator(no_swaps)):
+        return None
+    which = {None: "with or without", True: "with", False: "without"}[swaps]
+    return f"unitary is not the QFT {which} the final swaps"
 
 
 def _adder_layout(circuit, n):
@@ -144,9 +150,26 @@ def logical_counts(circuit, a=None):
     return t, rotations
 
 
+def same_state(circuit, reference):
+    """Both circuits, run on |0...0> without their final measurements, give the same state up to
+    global phase."""
+    if circuit.num_qubits != reference.num_qubits:
+        return f"expected {reference.num_qubits} qubits, got {circuit.num_qubits}"
+    if circuit.num_qubits > 20:
+        return "too large to simulate"
+    if Statevector(_unitary(circuit)).equiv(Statevector(_unitary(reference))):
+        return None
+    return "output state differs from the reference circuit's"
+
+
 def counts_close(circuit, family, n, rel_tol=COUNT_TOL):
     """T and rotation counts each within rel_tol of the benchmark circuit's."""
-    got, expected = logical_counts(circuit), logical_counts(FAMILIES[family](n))
+    return counts_close_to(circuit, FAMILIES[family](n), rel_tol)
+
+
+def counts_close_to(circuit, reference, rel_tol=COUNT_TOL):
+    """T and rotation counts each within rel_tol of the reference circuit's."""
+    got, expected = logical_counts(circuit), logical_counts(reference)
     for name, g, e in zip(("T count", "rotation count"), got, expected, strict=True):
         if abs(g - e) > rel_tol * e:
             return f"{name} {g} is not within {rel_tol:.0%} of the reference {e}"

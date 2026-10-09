@@ -1,0 +1,260 @@
+# The 40-task eval. Graded by src/qre_agent/eval.py; see docs/agent-design.md (Evals).
+#
+# Every task gives `params`: the values the answer must use. p is the physical error rate and code
+# the bicycle code; the error budget is never given and must stay at the 1e-3 default.
+#
+# standard:  a named benchmark family and size. Expected numbers are NOT written here: they are the
+#            results/comparison/results.json rows for (family, n, p) on surface and on `code`,
+#            compared field by field (physical_qubits, runtime_ns, physical_qubit_seconds, t_count)
+#            at rel_tol. When a row fails the error budget, the summary must say so.
+# free-form: a circuit that isn't a benchmark. The agent's circuit is checked against
+#            evals/references/<id>.py: `semantic` (semantics.qft/adder/grover with these
+#            arguments), `state` (same output state up to global phase) and `counts` (T and
+#            rotation counts within this relative tolerance). <id>_wrong.py is a corrupted
+#            circuit the grader self-test must reject.
+# ambiguous: `assume` lists what the prompt leaves out. The summary must state the value the
+#            agent used, and its numbers must equal the results.json row for that value (when
+#            the row exists). `reference` and `alternative` are two valid choices the self-test
+#            grades as correct.
+rel_tol: 1.0e-6
+error_budget: 1.0e-3
+results: results/comparison/results.json
+references: evals/references
+
+tasks:
+  # ---- standard (25) ----
+  - id: std-qft4-1e3-twogross
+    type: standard
+    difficulty: easy
+    prompt: Compare the surface code and the two-gross bicycle code for a 4-qubit QFT at p=1e-3.
+    params: {family: qft, n: 4, p: 1.0e-3, code: two-gross}
+  - id: std-qft4-1e4-gross
+    type: standard
+    difficulty: medium
+    prompt: What are the resource estimates for a 4-qubit quantum Fourier transform at a physical error rate of 1e-4, on the surface code and on IBM's gross code?
+    params: {family: qft, n: 4, p: 1.0e-4, code: gross}
+  - id: std-qft16-1e4-twogross
+    type: standard
+    difficulty: medium
+    prompt: I want to run a 16-qubit QFT on hardware with a 10^-4 physical error rate. How many physical qubits and how much time would the surface code and the two-gross code need?
+    params: {family: qft, n: 16, p: 1.0e-4, code: two-gross}
+  - id: std-qft20-1e3-twogross
+    type: standard
+    difficulty: hard  # two-gross error 1.06e-3: just over budget
+    prompt: Estimate a 20-qubit quantum Fourier transform with p = 0.001 on the surface code and on the two-gross code.
+    params: {family: qft, n: 20, p: 1.0e-3, code: two-gross}
+  - id: std-qft8-1e3-gross
+    type: standard
+    difficulty: hard  # gross fails the budget
+    prompt: Could IBM's gross code ([[144,12,12]]) run an 8-qubit QFT at a 0.1% physical error rate? Compare it with the surface code.
+    params: {family: qft, n: 8, p: 1.0e-3, code: gross}
+  - id: std-qpe4-1e3-twogross
+    type: standard
+    difficulty: easy
+    prompt: Estimate quantum phase estimation with 4 counting qubits at p=1e-3, surface code vs two-gross.
+    params: {family: qpe, n: 4, p: 1.0e-3, code: two-gross}
+  - id: std-qpe8-1e4-twogross
+    type: standard
+    difficulty: medium
+    prompt: Resource estimates for phase estimation with an 8-qubit counting register, physical error rate 1e-4, on the surface code and the two-gross code.
+    params: {family: qpe, n: 8, p: 1.0e-4, code: two-gross}
+  - id: std-qpe16-1e3-twogross
+    type: standard
+    difficulty: medium
+    prompt: How long would quantum phase estimation with 16 counting qubits take on the surface code and on the two-gross bicycle code at p = 1e-3, and how many physical qubits would each use?
+    params: {family: qpe, n: 16, p: 1.0e-3, code: two-gross}
+  - id: std-qpe4-1e4-gross
+    type: standard
+    difficulty: hard  # gross fails the budget
+    prompt: "Phase estimation with 4 counting qubits on the gross code at p = 1e-4: what does it cost, and how does the surface code compare?"
+    params: {family: qpe, n: 4, p: 1.0e-4, code: gross}
+  - id: std-adder8-1e3-twogross
+    type: standard
+    difficulty: easy
+    prompt: How many physical qubits does an 8-bit ripple-carry adder need on the surface code and on the two-gross code at p=1e-3?
+    params: {family: adder, n: 8, p: 1.0e-3, code: two-gross}
+  - id: std-adder4-1e4-gross
+    type: standard
+    difficulty: easy
+    prompt: Estimate a 4-bit ripple-carry adder at p=1e-4 on the surface code and the gross code.
+    params: {family: adder, n: 4, p: 1.0e-4, code: gross}
+  - id: std-adder16-1e4-gross
+    type: standard
+    difficulty: medium
+    prompt: "Adding two 16-bit numbers with a ripple-carry adder: compare the surface code and the gross bicycle code at a physical error rate of 10^-4."
+    params: {family: adder, n: 16, p: 1.0e-4, code: gross}
+  - id: std-adder32-1e3-twogross
+    type: standard
+    difficulty: medium
+    prompt: What would a 32-bit Cuccaro ripple-carry adder cost in physical qubits and runtime on the surface code versus the two-gross code, with p = 1e-3?
+    params: {family: adder, n: 32, p: 1.0e-3, code: two-gross}
+  - id: std-adder64-1e4-twogross
+    type: standard
+    difficulty: hard
+    prompt: We need to add two 64-bit integers with a ripple-carry adder on a fault-tolerant machine with a 0.01% physical error rate. Estimate it on the surface code and on the two-gross code.
+    params: {family: adder, n: 64, p: 1.0e-4, code: two-gross}
+  - id: std-adder16-1e3-gross
+    type: standard
+    difficulty: medium  # gross fails the budget
+    prompt: Estimate a 16-bit ripple-carry adder on the gross code at p = 1e-3, alongside the surface code.
+    params: {family: adder, n: 16, p: 1.0e-3, code: gross}
+  - id: std-tfim4-1e3-twogross
+    type: standard
+    difficulty: easy
+    prompt: "Estimate a Trotterized transverse-field Ising model simulation on 4 spins at p=1e-3: surface code vs two-gross."
+    params: {family: tfim, n: 4, p: 1.0e-3, code: two-gross}
+  - id: std-tfim8-1e4-twogross
+    type: standard
+    difficulty: medium
+    prompt: "Simulating an 8-site transverse-field Ising chain: what are the physical qubit counts and runtimes on the surface code and the two-gross code at a 1e-4 physical error rate?"
+    params: {family: tfim, n: 8, p: 1.0e-4, code: two-gross}
+  - id: std-tfim16-1e3-twogross
+    type: standard
+    difficulty: medium
+    prompt: Compare the surface code and two-gross for the 16-spin transverse-field Ising benchmark at a 0.1% physical error rate.
+    params: {family: tfim, n: 16, p: 1.0e-3, code: two-gross}
+  - id: std-tfim32-1e3-twogross
+    type: standard
+    difficulty: medium
+    prompt: Estimate a 32-spin TFIM time evolution at p = 1e-3 on both the surface code and the two-gross code.
+    params: {family: tfim, n: 32, p: 1.0e-3, code: two-gross}
+  - id: std-tfim64-1e3-twogross
+    type: standard
+    difficulty: hard  # two-gross error 1.06e-3: just over budget
+    prompt: How much would a 64-spin transverse-field Ising simulation cost at p = 10^-3? Give surface code and two-gross estimates.
+    params: {family: tfim, n: 64, p: 1.0e-3, code: two-gross}
+  - id: std-grover4-1e3-twogross
+    type: standard
+    difficulty: easy
+    prompt: Estimate Grover search on 4 qubits at p=1e-3 on the surface code and the two-gross code.
+    params: {family: grover, n: 4, p: 1.0e-3, code: two-gross}
+  - id: std-grover8-1e4-gross
+    type: standard
+    difficulty: medium
+    prompt: What does an 8-qubit Grover search cost on the gross code at p=1e-4, compared with the surface code?
+    params: {family: grover, n: 8, p: 1.0e-4, code: gross}
+  - id: std-grover16-1e3-twogross
+    type: standard
+    difficulty: hard  # the size is implied (2^16 items)
+    prompt: "Grover search over 2^16 items: estimate it on the surface code and the two-gross code at a physical error rate of 1e-3."
+    params: {family: grover, n: 16, p: 1.0e-3, code: two-gross}
+  - id: std-grover32-1e4-gross
+    type: standard
+    difficulty: hard  # gross fails the budget
+    prompt: Estimate a 32-qubit Grover search on IBM's [[144,12,12]] gross code with p = 1e-4, and on the surface code.
+    params: {family: grover, n: 32, p: 1.0e-4, code: gross}
+  - id: std-grover64-1e3-twogross
+    type: standard
+    difficulty: hard
+    prompt: Give fault-tolerant resource estimates for Grover search on 64 qubits at p = 1e-3, surface code versus two-gross.
+    params: {family: grover, n: 64, p: 1.0e-3, code: two-gross}
+
+  # ---- free-form (10) ----
+  - id: ff-qft-noswap-5
+    type: free-form
+    difficulty: easy
+    prompt: Estimate a 5-qubit quantum Fourier transform without the final swap gates (the output stays bit-reversed) at p = 1e-3, on the surface code and the two-gross code.
+    params: {p: 1.0e-3, code: two-gross}
+    semantic: {family: qft, n: 5, swaps: false}
+    counts: 0.1
+  - id: ff-qft-noswap-6
+    type: free-form
+    difficulty: medium
+    prompt: "A 6-qubit QFT with no swap network at the end, at a physical error rate of 1e-4: estimate it on the surface code and on the gross code."
+    params: {p: 1.0e-4, code: gross}
+    semantic: {family: qft, n: 6, swaps: false}
+    counts: 0.1
+  - id: ff-grover-4
+    type: free-form
+    difficulty: medium
+    prompt: Estimate one iteration of Grover search on 4 qubits that marks the state |0101> (the integer 5, with qubit 0 as the least significant bit), at p = 1e-3 on the surface code and the two-gross code. Build the oracle as its own gate named "oracle" (a circuit with name="oracle", appended with to_gate()) acting on the 4 data qubits, plus any ancillas, which must return to |0>.
+    params: {p: 1.0e-3, code: two-gross}
+    semantic: {family: grover, n: 4, marked: 5}
+  - id: ff-grover-5
+    type: free-form
+    difficulty: hard
+    prompt: Grover search on 5 qubits for the single marked item 22 (binary 10110, qubit 0 least significant) with 2 Grover iterations, at p = 1e-3, surface code vs two-gross. The oracle must be a separate gate named "oracle" acting on the data qubits, plus any ancillas, which must return to |0>.
+    params: {p: 1.0e-3, code: two-gross}
+    semantic: {family: grover, n: 5, marked: 22}
+  - id: ff-adder-interleaved-4
+    type: free-form
+    difficulty: hard
+    prompt: "Estimate a 4-bit ripple-carry adder with carry-out on an interleaved layout, at p = 1e-3 on the surface code and the two-gross code. Layout: qubit 0 is an ancilla (starting and ending in |0>), bit i of a is on qubit 2i+1, bit i of b on qubit 2i+2, and the carry-out goes to qubit 9 (starting in |0>), so qubits 2, 4, 6, 8, 9 hold a + b, least significant bit first."
+    params: {p: 1.0e-3, code: two-gross}
+    semantic: {family: adder, n: 4, layout: [[1, 3, 5, 7], [2, 4, 6, 8], [2, 4, 6, 8, 9]]}
+  - id: ff-adder-layout-3
+    type: free-form
+    difficulty: medium
+    prompt: "Estimate a 3-bit Vedral-Barenco-Ekert ripple-carry adder at p = 1e-4 on the surface code and the two-gross code. Layout: a on qubits 0-2, b on qubits 3-5, carry-out on qubit 6, any ancillas after qubit 6 (starting and ending in |0>); afterwards qubits 3-6 hold a + b, least significant bit first."
+    params: {p: 1.0e-4, code: two-gross}
+    semantic: {family: adder, n: 3, layout: [[0, 1, 2], [3, 4, 5], [3, 4, 5, 6]]}
+  - id: ff-ghz-rz-5
+    type: free-form
+    difficulty: easy
+    prompt: Prepare a 5-qubit GHZ state (H on qubit 0, then CNOTs 0→1, 1→2, 2→3, 3→4), apply Rz(0.3) to every qubit and measure all qubits. Estimate this circuit at p = 1e-3 on the surface code and the two-gross code.
+    params: {p: 1.0e-3, code: two-gross}
+    state: true
+    counts: 0.1
+  - id: ff-ghz-rz-8
+    type: free-form
+    difficulty: medium
+    prompt: "An 8-qubit GHZ state followed by Rz(π/5) on each qubit, then measurement: estimate it at p = 1e-4 on the surface code and on the gross code."
+    params: {p: 1.0e-4, code: gross}
+    state: true
+    counts: 0.1
+  - id: ff-heisenberg-4
+    type: free-form
+    difficulty: hard
+    prompt: Estimate a first-order Trotter simulation of a 4-spin open Heisenberg chain, H = Σ_i (X_i X_{i+1} + Y_i Y_{i+1} + Z_i Z_{i+1}), starting from |0101> (X on qubits 0 and 2), with 4 steps of dt = 0.1. Each step goes through the pairs (0,1), (1,2), (2,3) in that order and applies exp(-i·dt·(XX + YY + ZZ)) to each pair as XX, YY and ZZ rotations. Use p = 1e-3, surface code vs two-gross.
+    params: {p: 1.0e-3, code: two-gross}
+    state: true
+    counts: 0.1
+  - id: ff-crz-ladder-4
+    type: free-form
+    difficulty: medium
+    prompt: "On 4 qubits: Hadamard on every qubit, then controlled-Rz(π/7) with control qubit i and target i+1 for i = 0, 1, 2, then Hadamard on every qubit, then measure. Estimate it at p = 1e-3 on the surface code and the two-gross code."
+    params: {p: 1.0e-3, code: two-gross}
+    state: true
+    counts: 0.1
+
+  # ---- ambiguous (5) ----
+  - id: amb-grover8-p-code
+    type: ambiguous
+    difficulty: ambiguous
+    prompt: What does Grover search on 8 qubits cost on IBM's bicycle architecture?
+    params: {family: grover, n: 8}
+    assume: [p, code]
+    reference: {p: 1.0e-3, code: two-gross}
+    alternative: {p: 1.0e-4, code: gross}
+  - id: amb-qft-n
+    type: ambiguous
+    difficulty: ambiguous
+    prompt: Estimate the quantum Fourier transform at p = 1e-4 on the surface code and the two-gross code.
+    params: {family: qft, p: 1.0e-4, code: two-gross}
+    assume: [n]
+    reference: {n: 8}
+    alternative: {n: 4}
+  - id: amb-adder4-code
+    type: ambiguous
+    difficulty: ambiguous
+    prompt: How many physical qubits does a 4-bit ripple-carry adder need on a bicycle code at p = 1e-3, and on the surface code?
+    params: {family: adder, n: 4, p: 1.0e-3}
+    assume: [code]
+    reference: {code: two-gross}
+    alternative: {code: gross}
+  - id: amb-tfim8-p
+    type: ambiguous
+    difficulty: ambiguous
+    prompt: Compare the surface code with IBM's two-gross code for simulating an 8-spin transverse-field Ising chain.
+    params: {family: tfim, n: 8, code: two-gross}
+    assume: [p]
+    reference: {p: 1.0e-3}
+    alternative: {p: 1.0e-4}
+  - id: amb-qpe-n-p
+    type: ambiguous
+    difficulty: ambiguous
+    prompt: How much does quantum phase estimation cost on the gross code compared with the surface code?
+    params: {family: qpe, code: gross}
+    assume: [n, p]
+    reference: {n: 4, p: 1.0e-3}  # gross fails the budget here, so the answer must say so
+    alternative: {n: 8, p: 1.0e-4}

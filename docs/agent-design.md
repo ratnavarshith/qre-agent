@@ -128,6 +128,40 @@ The eval grader sorts tasks into two types.
 
 These checks need the task's family and size, so they belong to the grader, not to `verify`. They don't scale past small n: the QFT check builds a 2^n × 2^n unitary.
 
+## Evals
+
+Phase 2, step 3. Tasks: `evals/tasks.yaml`. Grader: `src/qre_agent/eval.py`. Runner: `scripts/run_eval.py`, driven by a config (`evals/eval.yaml` for the full eval, `evals/pilot.yaml` for the pilot) that is copied next to the results.
+
+**Tasks.** 40, each with an id, type, difficulty (easy, medium, hard, or ambiguous), prompt and the parameters the answer must use (`params`):
+- 25 standard: a benchmark family and size, p = 1e-3 or 1e-4, gross or two-gross, in varied phrasing ("2^16 items", "0.01% physical error rate", "[[144,12,12]]"). The expected numbers aren't written in the task file. The grader looks up the `results/comparison/results.json` rows for (family, n, p) on surface and on the code, and compares physical qubits, runtime, qubit-seconds and T count at relative tolerance 1e-6. Six tasks have a bicycle estimate over the error budget, so the summary has to say it fails.
+- 10 free-form: circuits that aren't in `circuits.py` (QFT without swaps, Grover with an oracle gate named `oracle`, adders on given layouts, GHZ plus rotations, a Heisenberg Trotter chain, a controlled-Rz ladder). The agent's circuit is checked against a reference in `evals/references/<id>.py`, with whichever of these the task lists: `semantics.qft`/`adder`/`grover` with the task's arguments (`qft` can require no swaps), `same_state` (output state from |0...0> equals the reference's up to global phase) and `counts_close_to` (T and rotation counts within 10% of the reference's). The numbers aren't compared to a fixed row.
+- 5 ambiguous: the prompt leaves out the error rate, the size or the bicycle code (`assume`). The summary must say it assumed something and state the value it used, and the numbers must equal the results.json row for that value. A valid choice other than the default is graded correct.
+
+The error budget is never given and must stay at the 1e-3 default.
+
+**Grading.** A run is correct when it has an answer, the task's checks pass and the final verify passed (on the first try or after the retry). Each failure gets a category. A run is counted under its first category in this order:
+
+| category | when |
+|---|---|
+| api error | the provider failed (not the agent; left out of the rates) |
+| budget/step limit | the guard refused a call, or no answer within the step limit while still calling tools |
+| gave up | no answer, and the last reply was prose without tool calls |
+| wrong circuit | wrong benchmark family or size, or the free-form circuit fails its checks |
+| tool misuse | `build_circuit` for a named benchmark; verify's same_circuit or physical_bounds failed |
+| wrong assumptions | p, code or budget differ from the task, surface and bicycle used different p, or an ambiguous task's assumption isn't stated |
+| missed budget fail | a cited result is over the error budget and the summary doesn't say so |
+| made-up numbers | verify's numbers_match or fields_match failed |
+| unit/format | the answer never parsed, or a field is off by a power of 1000 (ms written as ns) |
+| reference mismatch | right circuit and settings but numbers differ from results.json: the toolchain changed, not the agent |
+
+The stated-assumption checks are regexes. An error rate counts as stated only right after "error rate" or "p" (or right before "error rate"), so "an error budget of 0.001" doesn't state p = 1e-3. "two-gross" doesn't state "gross".
+
+**Grader self-test.** `run_eval.py --self-test` (and `tests/test_eval.py`, marked `compiler`) builds every task's reference answer with the real tools, as an agent would, and grades it, along with corrupted versions: a ratio in the prose, the runtime in ms, the wrong size, p or code, the corrupted free-form circuit (`<id>_wrong.py`), the budget failure left unsaid, and for ambiguous tasks the assumption left out or misstated, plus the other valid assumption. The reference and the alternative must pass, and each corruption must fail with its expected category. The table goes to `results/eval/grader-selftest.md`.
+
+**Output.** `results/eval/<model>/<date>[-name]/`: `config.yaml`, `meta.json` (versions, hardware, task-file hash), `runs.jsonl` (one graded line per run: correct, verify first try and after retry, category and reasons, tool errors, steps, tokens, our cost and OpenRouter's, wall latency) and `summary.md`. The summary gives rates as mean ± sample standard deviation (min–max) across repeats, per type and difficulty, plus cost, tokens, latency, failure counts by category and per-task results. Repeat i uses seed `seed + i`, which OpenRouter passes to providers that support it. `--summarize DIR` rewrites the summary from `runs.jsonl`. `--estimate` prints the worst case (every run uses every step at the guard's worst case) and an expected cost (the mean cost of earlier runs of that model in `runs/`), without calling the API. Spend goes to phase `eval`.
+
+**Known gap.** `estimate_surface` rejects circuits whose prepared form has rotations at exactly ±π/2 ("found N rotation angles, v3 counted M"): `ryy`, `rxx`, `cp(π)`, Qiskit's Draper adder. The Heisenberg reference works around this with H/S basis changes, and the Draper adder task was replaced by an interleaved Cuccaro adder. An agent that writes `ryy` will get a tool error until this is fixed.
+
 ## Still to build
 
 - An Anthropic client (OpenRouter is done).
@@ -137,4 +171,4 @@ These checks need the task's family and size, so they belong to the grader, not 
 - A check that both sides used the same physical error rate and error budget. Today (a) checks the circuit only.
 - Surfacing `passes: false` (error over budget) in the answer. The verifier doesn't require it yet.
 - A container sandbox for untrusted input.
-- Evals: a problem set with reference answers, repeated runs, spread across seeds and models.
+- Evals on more models, and the full 40-task run (see Evals).

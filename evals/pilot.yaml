@@ -1,0 +1,18 @@
+# Pilot of the eval: 5 tasks (2 standard, 2 free-form, 1 ambiguous) x 1 run, to check the
+# harness end to end before the full eval. One run per task, so no spread.
+#   .venv/Scripts/python scripts/run_eval.py evals/pilot.yaml --estimate   # cost, no API calls
+#   .venv/Scripts/python scripts/run_eval.py evals/pilot.yaml
+name: pilot
+model: google/gemini-2.5-flash
+phase: eval
+tasks: evals/tasks.yaml
+only:
+  - std-qft4-1e4-gross  # medium
+  - std-qft8-1e3-gross  # hard: gross is over the error budget, the answer must say so
+  - ff-ghz-rz-5  # easy
+  - ff-grover-4  # medium: custom oracle named "oracle"
+  - amb-grover8-p-code  # error rate and bicycle code not given
+runs: 1
+seed: 0
+max_steps: 12
+max_tokens: 4096
