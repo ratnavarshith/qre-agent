@@ -1,10 +1,12 @@
 import json
+import subprocess
 
 import pytest
 import yaml
 from qiskit import QuantumCircuit
 
-from qre_agent.agent import final_answer, run
+from qre_agent import load_assumptions
+from qre_agent.agent import environment, final_answer, git_state, run
 from qre_agent.llm import ChatReply
 from qre_agent.spend import Guard, read_log
 from qre_agent.tools import SandboxError, Toolbox
@@ -253,3 +255,31 @@ def test_without_an_answer_neither_flag_is_set(guard, tmp_path):
     result = go(FakeClient(reply("no idea")), guard, tmp_path, max_steps=2)
     assert (result.verify_passed_first_try, result.verify_passed_after_retry) == (False, False)
     assert auto_verifies(result) == []
+
+
+def git(root, *args):
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=root, check=True,
+        capture_output=True,
+    )  # fmt: skip
+
+
+def test_git_state_is_the_commit_and_whether_tracked_files_changed(tmp_path):
+    git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("a")
+    git(tmp_path, "add", "a.txt")
+    git(tmp_path, "commit", "-q", "-m", "first")
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True).strip()
+    assert git_state(tmp_path) == {"commit": commit, "dirty": False}
+    (tmp_path / "new.txt").write_text("untracked files don't count: results are written there")
+    assert git_state(tmp_path)["dirty"] is False
+    (tmp_path / "a.txt").write_text("changed")
+    assert git_state(tmp_path) == {"commit": commit, "dirty": True}
+
+
+def test_git_state_outside_a_repository(tmp_path):
+    assert git_state(tmp_path) == {"commit": None, "dirty": None}
+
+
+def test_environment_records_the_git_state():
+    assert set(environment(load_assumptions())["git"]) == {"commit", "dirty"}

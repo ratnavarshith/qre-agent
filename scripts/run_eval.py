@@ -86,8 +86,10 @@ def out_dir(cfg):
 def run_eval(config_path, cfg, tasks, suite, guard, expected):
     """Returns the reason the eval stopped early, or None."""
     out = out_dir(cfg)
-    shutil.copy(config_path, out / "config.yaml")
     env = environment(Toolbox().assumptions)
+    shutil.copy(config_path, out / "config.yaml")
+    with (out / "config.yaml").open("a", encoding="utf-8") as f:  # the copy says what ran
+        f.write(f"\n# run at git commit {env['git']['commit']}, dirty: {env['git']['dirty']}\n")
     meta = {
         "model": cfg["model"],
         "date": time.strftime("%Y-%m-%d %H:%M:%S %z"),

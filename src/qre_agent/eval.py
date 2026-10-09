@@ -584,7 +584,8 @@ def summarize(records, meta):
         f"{meta['config']['seed']} + i). Task file `{meta['tasks']}` (sha256 "
         f"{meta['tasks_sha256'][:12]}). Versions: "
         + ", ".join(f"{k} {v}" for k, v in meta["versions"].items())
-        + f". Hardware: {meta['hardware']['processor']}, {meta['hardware']['platform']}, "
+        + f". Git commit {(meta.get('git') or {}).get('commit')}, dirty: "
+        f"{(meta.get('git') or {}).get('dirty')}. Hardware: {meta['hardware']['processor']}, {meta['hardware']['platform']}, "
         f"Python {meta['hardware']['python']}.",
         "",
         (

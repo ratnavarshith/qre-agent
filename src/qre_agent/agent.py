@@ -5,6 +5,7 @@ count, cost and latency goes to runs/<run_id>.jsonl. See docs/agent-design.md.""
 import json
 import platform
 import re
+import subprocess
 import time
 from dataclasses import dataclass
 from importlib.metadata import version
@@ -89,8 +90,26 @@ class Run:
     verify_passed_after_retry: bool = False  # the first verify failed and the revision passed
 
 
+def git_state(root=REPO_ROOT):
+    """The checked-out commit and whether tracked files differ from it. Untracked files don't
+    count: results are written to untracked directories. Both are None outside a repository."""
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=root, capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+    try:
+        return {
+            "commit": git("rev-parse", "HEAD"),
+            "dirty": bool(git("status", "--porcelain", "--untracked-files=no")),
+        }
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return {"commit": None, "dirty": None}
+
+
 def environment(a):
-    """Versions and hardware recorded with every run."""
+    """Versions, hardware and git state recorded with every run."""
     try:
         compiler = compiler_versions(a)
     except FileNotFoundError:
@@ -102,6 +121,7 @@ def environment(a):
             "processor": platform.processor(),
             "python": platform.python_version(),
         },
+        "git": git_state(),
     }
 
 
