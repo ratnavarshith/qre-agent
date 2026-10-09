@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from qre_agent.llm import OpenRouter, parse
+from qre_agent.llm import OpenRouter, Paced, Pacer, parse
 from qre_agent.tools import SCHEMAS
 
 KEY = "sk-or-v1-test-0123456789abcdef"
@@ -123,3 +123,44 @@ def test_parse_reads_cache_write_tokens():
     r = parse(data)
     assert (r.input_tokens, r.cached_tokens, r.cache_write_tokens) == (2893, 1830, 964)
     assert parse(COMPLETION).cache_write_tokens == 0
+
+
+class Clock:
+    """A fake clock whose sleep advances it."""
+
+    def __init__(self):
+        self.now = 100.0
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+def test_pacer_spaces_calls_at_least_a_minute_over_max_rpm_apart():
+    clock = Clock()
+    pacer = Pacer(15, clock.time, clock.sleep)  # 4 s apart
+    assert pacer.wait() == 0  # the first call goes at once
+    assert pacer.wait() == pytest.approx(4)  # an immediate second call waits the full gap
+    clock.now += 1.5  # the call itself took 1.5 s
+    assert pacer.wait() == pytest.approx(2.5)
+    clock.now += 10  # a long call: no wait
+    assert pacer.wait() == 0
+    assert pacer.waited == pytest.approx(6.5)
+
+
+def test_paced_client_waits_then_delegates_and_exposes_the_clients_attributes():
+    class Inner:
+        tools, seed = ["t"], 3
+
+        def complete(self, model, messages, max_tokens):
+            return ("reply", model, messages, max_tokens)
+
+    clock = Clock()
+    pacer = Pacer(30, clock.time, clock.sleep)
+    client = Paced(Inner(), pacer)
+    assert (client.tools, client.seed, client.pacer) == (["t"], 3, pacer)
+    assert client.complete("m", [1], 5) == ("reply", "m", [1], 5)
+    client.complete("m", [1], 5)
+    assert pacer.waited == pytest.approx(2)  # 30 rpm: 2 s apart

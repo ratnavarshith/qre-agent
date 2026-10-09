@@ -3,6 +3,7 @@ OpenRouter reports what it billed for each call (usage.cost); the guard logs tha
 budgets.yaml estimate and warns when they disagree."""
 
 import json
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -68,6 +69,40 @@ class OpenRouter:
             raise RuntimeError(
                 f"OpenRouter HTTP {e.code}: {e.read().decode(errors='replace')}"
             ) from None
+
+
+class Pacer:
+    """Keeps calls at least 60 / max_rpm seconds apart (so at most max_rpm in any minute), for
+    providers that rate-limit an account. One pacer is shared by every client of a model. This
+    is not a retry: a failed call still fails. `waited` is the total time slept."""
+
+    def __init__(self, max_rpm, clock=time.monotonic, sleep=time.sleep):
+        self.interval, self.clock, self.sleep = 60 / max_rpm, clock, sleep
+        self.last, self.waited = None, 0.0
+
+    def wait(self):
+        """Sleeps until the next call may go; returns the seconds slept."""
+        wait = 0.0 if self.last is None else max(0.0, self.last + self.interval - self.clock())
+        if wait:
+            self.sleep(wait)
+            self.waited += wait
+        self.last = self.clock()
+        return wait
+
+
+class Paced:
+    """A client whose calls wait for the pacer first; other attributes (tools, seed) come from
+    the wrapped client."""
+
+    def __init__(self, client, pacer):
+        self.client, self.pacer = client, pacer
+
+    def __getattr__(self, name):
+        return getattr(self.client, name)
+
+    def complete(self, model, messages, max_tokens):
+        self.pacer.wait()
+        return self.client.complete(model, messages, max_tokens)
 
 
 def mark_cacheable(messages, tools):
