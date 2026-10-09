@@ -207,3 +207,20 @@ def test_summary_reports_the_api_error_baseline():
     rs[1] = rs[1] | err
     text = ev.summarize(rs, meta)
     assert "API errors (no retries): 2 of 4 runs on the first attempt, 1 after rerunning" in text
+
+
+def test_record_leaves_the_pacer_wait_out_of_the_latencies():
+    from types import SimpleNamespace
+
+    run = SimpleNamespace(
+        run_id="x", stop_reason="answered", steps=3, verify_passed_first_try=True,
+        verify_passed_after_retry=False, totals={"llm_s": 12.0, "tool_s": 1.0, "cost_usd": 0.1},
+    )  # fmt: skip
+    task = {"id": "t", "type": "standard", "difficulty": "easy"}
+    grading = {"correct": True, "category": None, "failures": []}
+    r = ev.record(
+        task, SimpleNamespace(outputs=[]), run, grading, "m", 0, 0, wall_s=20.0, paced=8.0
+    )
+    assert (r["latency_s"], r["llm_s"], r["paced_wait_s"]) == (12.0, 4.0, 8.0)
+    r = ev.record(task, SimpleNamespace(outputs=[]), run, grading, "m", 0, 0, wall_s=20.0)
+    assert (r["latency_s"], r["llm_s"], r["paced_wait_s"]) == (20.0, 12.0, 0.0)

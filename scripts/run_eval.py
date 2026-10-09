@@ -34,7 +34,7 @@ from qre_agent.eval import (
     summarize,
     worst_case,
 )
-from qre_agent.llm import OpenRouter
+from qre_agent.llm import OpenRouter, Paced, Pacer
 from qre_agent.spend import REPO_ROOT, BudgetError, Guard
 from qre_agent.tools import SCHEMAS, Toolbox
 
@@ -86,10 +86,18 @@ def out_dir(cfg):
     return path
 
 
+def make_client(cfg, seed, pacer):
+    """The OpenRouter client for one repeat, behind the eval's pacer if it has one."""
+    client = OpenRouter(SCHEMAS, seed=seed, cache=cfg.get("cache", False))
+    return Paced(client, pacer) if pacer else client
+
+
 def run_one(cfg, task, repeat, run_id, client, guard, suite, rerun_of=None):
     """One graded run. Returns its runs.jsonl record and why the budget guard refused a call, if
     it did."""
     toolbox, refused = Toolbox(), None
+    pacer = getattr(client, "pacer", None)
+    waited = pacer.waited if pacer else 0.0
     start = time.perf_counter()
     try:
         result = run(task["prompt"], client, guard, cfg["model"], run_id, toolbox,
@@ -102,7 +110,8 @@ def run_one(cfg, task, repeat, run_id, client, guard, suite, rerun_of=None):
     _, last = read_trace(result.trace_path)
     grading = grade(task, toolbox, result, suite, last)
     seed = cfg["seed"] + repeat
-    rec = record(task, toolbox, result, grading, cfg["model"], seed, repeat, wall, rerun_of)
+    paced = pacer.waited - waited if pacer else 0.0
+    rec = record(task, toolbox, result, grading, cfg["model"], seed, repeat, wall, rerun_of, paced)
     print(f"r{repeat} {task['id']}: {'correct' if rec['correct'] else rec['category']}, "
           f"steps {rec['steps']}, ${rec['cost_usd']:.5f}, {wall:.0f} s")  # fmt: skip
     return rec, refused
@@ -126,9 +135,10 @@ def run_eval(config_path, cfg, tasks, suite, guard, expected):
     (out / "meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
     stamp = time.strftime("%Y%m%d-%H%M%S")
     records, stopped = [], None
+    pacer = Pacer(cfg["max_rpm"]) if cfg.get("max_rpm") else None
     with (out / "runs.jsonl").open("w", encoding="utf-8") as f:
         for repeat in range(cfg["runs"]):
-            client = OpenRouter(SCHEMAS, seed=cfg["seed"] + repeat, cache=cfg.get("cache", False))
+            client = make_client(cfg, cfg["seed"] + repeat, pacer)
             for task in tasks:
                 run_id = f"eval-{stamp}-{task['id']}-r{repeat}"
                 rec, stopped = run_one(cfg, task, repeat, run_id, client, guard, suite)
@@ -164,8 +174,9 @@ def rerun_errors(path, guard):
     todo = [r for r in records if r["category"] == "api error" and "rerun_of" not in r]
     print(f"{len(todo)} api-error runs of {len(records)} to rerun once")
     stamp, reruns, stopped = time.strftime("%Y%m%d-%H%M%S"), [], None
+    pacer = Pacer(cfg["max_rpm"]) if cfg.get("max_rpm") else None
     for old in todo:
-        client = OpenRouter(SCHEMAS, seed=old["seed"], cache=cfg.get("cache", False))
+        client = make_client(cfg, old["seed"], pacer)
         run_id = f"eval-{stamp}-{old['task']}-r{old['repeat']}-rerun"
         rec, stopped = run_one(cfg, tasks[old["task"]], old["repeat"], run_id, client, guard,
                                suite, old)  # fmt: skip

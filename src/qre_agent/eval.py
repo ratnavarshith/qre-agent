@@ -295,8 +295,9 @@ def run_from_trace(run_id, path):
     )
 
 
-def record(task, toolbox, run, grading, model, seed, repeat, wall_s, rerun_of=None):
-    """One line of runs.jsonl. `rerun_of` is the earlier api-error record this run replaces."""
+def record(task, toolbox, run, grading, model, seed, repeat, wall_s, rerun_of=None, paced=0.0):
+    """One line of runs.jsonl. `rerun_of` is the earlier api-error record this run replaces;
+    `paced` is the time the request pacer made it wait, which is left out of the latencies."""
     t = run.totals
     return {
         "task": task["id"],
@@ -321,8 +322,9 @@ def record(task, toolbox, run, grading, model, seed, repeat, wall_s, rerun_of=No
         "reasoning_tokens": t.get("reasoning_tokens", 0),
         "cost_usd": t.get("cost_usd", 0.0),
         "reported_cost_usd": t.get("reported_cost_usd", 0.0),
-        "latency_s": wall_s,
-        "llm_s": t.get("llm_s", 0.0),
+        "latency_s": wall_s - paced,
+        "paced_wait_s": paced,
+        "llm_s": t.get("llm_s", 0.0) - paced,
         "tool_s": t.get("tool_s", 0.0),
     } | ({"rerun_of": {k: rerun_of[k] for k in ("run_id", "stop_reason")}} if rerun_of else {})
 

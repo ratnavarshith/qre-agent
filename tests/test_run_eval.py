@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from qre_agent.llm import ChatReply
+from qre_agent.llm import ChatReply, Pacer
 from qre_agent.spend import Guard
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "run_eval.py"
@@ -121,3 +121,36 @@ def test_a_rerun_that_fails_again_stays_an_api_error(run_eval, tmp_path, monkeyp
     (record,) = [json.loads(line) for line in (out / "runs.jsonl").read_text("utf-8").splitlines()]
     assert record["category"] == "api error" and "rerun_of" in record
     assert "1 of 1 runs on the first attempt, 1 after" in (out / "summary.md").read_text("utf-8")
+
+
+def test_max_rpm_paces_calls_and_keeps_the_wait_out_of_the_latency(run_eval, tmp_path, monkeypatch):
+    class Clock:  # only the pacer's sleeps move it, so each call after the first waits 2 s
+        now = 0.0
+
+    monkeypatch.setattr(run_eval, "OpenRouter", Scripted)
+    monkeypatch.setattr(
+        run_eval,
+        "Pacer",
+        lambda rpm: Pacer(rpm, lambda: Clock.now, lambda s: setattr(Clock, "now", Clock.now + s)),
+    )
+    Scripted.failures = 0
+    budgets = tmp_path / "budgets.yaml"
+    budgets.write_text(
+        yaml.safe_dump({"caps": {"eval": 1}, "prices": {"fake": {"input": 1.0, "output": 2.0}}})
+    )
+    guard = Guard("eval", budgets, tmp_path / "spend.jsonl")
+    cfg = {"model": "fake", "phase": "eval", "tasks": "evals/tasks.yaml", "runs": 2, "seed": 0,
+           "max_steps": 6, "max_tokens": 100, "max_rpm": 30,
+           "stop": {"cost_factor": 100, "api_error_rate": 1.0, "min_runs": 10}}  # fmt: skip
+    config = tmp_path / "config.yaml"
+    config.write_text(yaml.safe_dump(cfg))
+    suite = run_eval.load_suite(run_eval.REPO_ROOT / cfg["tasks"])
+    tasks = [t for t in suite["tasks"] if t["id"] == TASK]
+    run_eval.run_eval(config, cfg, tasks, suite, guard, expected=1.0)
+    (out,) = (tmp_path / "eval" / "fake").iterdir()
+    first, second = [
+        json.loads(line) for line in (out / "runs.jsonl").read_text("utf-8").splitlines()
+    ]
+    assert first["paced_wait_s"] == 4.0  # 3 calls: the first goes at once, two wait 2 s
+    assert second["paced_wait_s"] == 6.0  # the pacer is shared: this run's first call waits too
+    assert first["category"] is None and second["category"] is None
