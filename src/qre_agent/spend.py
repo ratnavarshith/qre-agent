@@ -2,12 +2,14 @@
 phase over its cap in budgets.yaml, and logs model, tokens and cost of each call to
 runs/spend.jsonl.
 
-A client is anything with `complete(model, messages, max_tokens) -> Reply`.
+A client is anything with `complete(model, messages, max_tokens) -> Reply`. A client that sends
+tool schemas with every call exposes them as `client.tools`, so the worst case counts them.
 """
 
 import json
 import os
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +20,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 BUDGETS_PATH = REPO_ROOT / "budgets.yaml"
 LOG_PATH = REPO_ROOT / "runs" / "spend.jsonl"
 PER_TOKENS = 1_000_000
+KEY_PREFIXES = {"OPENROUTER_API_KEY": "sk-or-", "ANTHROPIC_API_KEY": "sk-ant-"}
+COST_MISMATCH = 0.2  # warn when the provider's cost is off ours by more than this fraction
 
 
 class BudgetError(Exception):
@@ -30,11 +34,23 @@ class Reply:
     input_tokens: int  # all prompt tokens, cached ones included
     output_tokens: int
     cached_tokens: int = 0
+    reported_cost_usd: float | None = None  # what the provider says it billed, if it says
 
 
 def load_keys():
     """Put the keys from .env into the environment (existing variables win)."""
     load_dotenv(REPO_ROOT / ".env")
+
+
+def api_key(name):
+    """The key from .env, after checking its prefix. Errors name the variable, never the value."""
+    load_keys()
+    key = os.environ.get(name, "")
+    if not key.startswith(KEY_PREFIXES[name]):
+        raise RuntimeError(
+            f"{name} is missing or malformed: it must start with {KEY_PREFIXES[name]!r} (check .env)"
+        )
+    return key
 
 
 def cost(price, input_tokens, output_tokens, cached_tokens=0):
@@ -77,7 +93,8 @@ class Guard:
             raise BudgetError(f"no price for model {model!r} in budgets.yaml")
         price = self.prices[model]
         # Worst case: every character of the prompt is a token, and the reply fills max_tokens.
-        prompt_tokens = len(json.dumps(messages))
+        tools = getattr(client, "tools", None)
+        prompt_tokens = len(json.dumps(messages)) + (len(json.dumps(tools)) if tools else 0)
         worst = cost(price, prompt_tokens, max_tokens)
         if worst > self.remaining():
             raise BudgetError(
@@ -91,10 +108,18 @@ class Guard:
             self._log(model, "failed", prompt_tokens, max_tokens, 0, worst)
             raise
         usd = cost(price, reply.input_tokens, reply.output_tokens, reply.cached_tokens)
-        self._log(model, "ok", reply.input_tokens, reply.output_tokens, reply.cached_tokens, usd)
+        reported = reply.reported_cost_usd
+        if reported is not None and abs(reported - usd) > COST_MISMATCH * usd:
+            warnings.warn(
+                f"{model}: provider reports ${reported:.6f}, budgets.yaml prices give ${usd:.6f}",
+                stacklevel=2,
+            )
+        self._log(
+            model, "ok", reply.input_tokens, reply.output_tokens, reply.cached_tokens, usd, reported
+        )
         return reply
 
-    def _log(self, model, status, input_tokens, output_tokens, cached_tokens, usd):
+    def _log(self, model, status, input_tokens, output_tokens, cached_tokens, usd, reported=None):
         record = {
             "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "phase": self.phase,
@@ -104,6 +129,7 @@ class Guard:
             "output_tokens": output_tokens,
             "cached_tokens": cached_tokens,
             "cost_usd": usd,
+            "reported_cost_usd": reported,
         }
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         with self.log_path.open("a", encoding="utf-8") as f:

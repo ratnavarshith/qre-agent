@@ -1,6 +1,6 @@
 # Agent design: tools and verifier
 
-Phase 2, step 1. The tools and the verifier exist and are tested. No LLM is wired in yet.
+Phase 2. Step 1 built the tools and the verifier; step 2 added the agent loop and an OpenRouter client.
 
 ## Shape
 
@@ -92,13 +92,23 @@ The second layer, `numbers_match`, checks the prose. Every number written in `su
 
 **d. `grows_with_size`.** For a sweep, physical-qubit-seconds strictly increases with size on each architecture, and sizes must be distinct. Raw qubit counts aren't checked, because they can dip when v3 picks a different factory. In `results/comparison`, surface adder and Grover at p = 1e-3 dip (adder: 82,110 qubits at n = 4, 76,209 at n = 8), while qubit-seconds grow for every family and architecture.
 
+## Agent loop
+
+`src/qre_agent/agent.py` runs one task: a system prompt (tools, default assumptions, the rule to state any assumption the user didn't give, the final-answer format), then up to 12 LLM calls (`max_tokens` 4096 each) through `spend.Guard`. Tool calls go through `Toolbox.call`, so a tool error goes back to the agent as `{"error": ...}`; so do tool arguments that aren't JSON.
+
+A reply without tool calls is the final answer. A ```` ```json ```` fence around it is dropped. If it doesn't parse, or doesn't cite exactly one surface and one bicycle result the session produced, the reason goes back to the agent and the loop continues (within the step limit). Otherwise `verify` runs on the cited results and its result is attached. A failed verify ends the run; there is no revision yet.
+
+Each run writes `runs/<run_id>.jsonl`: a `meta` record (task, model, limits, seed, assumptions, versions, hardware), every message, every LLM call (message, tokens input/cached/output/reasoning, our cost, OpenRouter's reported cost, latency), every tool call (arguments, result, latency) and a `final` record (stop reason, answer, verification, totals). The `final` record is written even when a call raises.
+
+`src/qre_agent/llm.py` is the OpenRouter client. It sends the tool schemas with every call and asks for usage accounting. The guard logs OpenRouter's reported cost next to the `budgets.yaml` estimate in `runs/spend.jsonl` and warns when they differ by more than 20% of ours. The guard's worst case counts the tool schemas too.
+
 ## Still to build
 
-- An agent loop: system prompt, a provider adapter (OpenRouter and Anthropic) behind `spend.Guard`, and tool-call dispatch through `Toolbox.call`.
+- An Anthropic client (OpenRouter is done).
 - A rule for what happens when `verify` fails: let the agent revise a limited number of times, then report the failure instead of answering.
+- A final answer that reports more than one bicycle code (gross and two-gross) can't be verified: `verify` takes one result per architecture.
 - A comparison tool that computes ratios and differences, so answers can state them and still pass check (c).
 - A check that both sides used the same physical error rate and error budget. Today (a) checks the circuit only.
 - Surfacing `passes: false` (error over budget) in the answer. The verifier doesn't require it yet.
 - A container sandbox for untrusted input.
 - Evals: a problem set with reference answers, repeated runs, spread across seeds and models.
-- Recording each session (tool calls, outputs, versions, spend) under `runs/`.

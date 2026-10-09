@@ -1,0 +1,33 @@
+# Phase 2 trial of the agent loop: three tasks, one run each, on a cheap model. A smoke test of
+# the loop, not an eval (one run per task, so no spread). Traces go to runs/<run_id>.jsonl.
+#   .venv/Scripts/python scripts/run_trial.py evals/trial.yaml --estimate   # worst case, no calls
+#   .venv/Scripts/python scripts/run_trial.py evals/trial.yaml
+model: google/gemini-2.5-flash
+phase: dev
+max_steps: 12
+max_tokens: 4096  # per LLM call
+seed: 0  # sent to OpenRouter; providers may ignore it
+
+# Expected numbers are results/comparison/results.json rows (default assumptions, two-gross for
+# bicycle). They hold for the circuits in src/qre_agent/circuits.py; an agent that builds a
+# different circuit for the same problem gets different numbers, which t_count shows.
+tasks:
+  - id: easy
+    prompt: Compare surface code and two-gross for a 4-qubit QFT at p=1e-3
+    expected:
+      row: {family: qft, n: 4, p: 1.0e-3}
+      surface: {physical_qubits: 140015, runtime_ns: 1934400, physical_qubit_seconds: 270.845016, t_count: 9}
+      bicycle: {physical_qubits: 1226, runtime_ns: 75295028.7, physical_qubit_seconds: 92.3117051862, t_count: 9}
+  - id: medium
+    prompt: How many physical qubits does an 8-bit ripple-carry adder need on each architecture?
+    expected:
+      row: {family: adder, n: 8, p: 1.0e-3}  # CDKM ripple-carry adder with carry-out
+      surface: {physical_qubits: 76209, runtime_ns: 572000, physical_qubit_seconds: 43.591548, t_count: 112}
+      bicycle: {physical_qubits: 1994, runtime_ns: 40132522.9, physical_qubit_seconds: 80.0242506626, t_count: 112}
+  - id: ambiguous
+    prompt: What does Grover search on 8 qubits cost on IBM's bicycle architecture?
+    must_state_assumption: physical error rate  # not given; the agent should say it assumed 1e-3
+    expected:
+      row: {family: grover, n: 8, p: 1.0e-3}  # 2 iterations, Toffoli AND-ladder with 6 ancillas
+      surface: {physical_qubits: 71440, runtime_ns: 1788800, physical_qubit_seconds: 127.791872, t_count: 336}
+      bicycle: {physical_qubits: 1994, runtime_ns: 86584337.2, physical_qubit_seconds: 172.6491683768, t_count: 336}

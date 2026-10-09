@@ -129,3 +129,54 @@ def test_every_default_price_is_complete_and_cache_reads_are_not_dearer_than_inp
     for model, p in prices.items():
         assert set(p) == {"input", "output", "cache_read"}, model
         assert 0 < p["cache_read"] <= p["input"] < p["output"], model
+
+
+def test_worst_case_counts_the_tool_schemas_the_client_sends(guard):
+    client = FakeClient()
+    client.tools = [{"type": "function", "function": {"description": "x" * 20_000}}]
+    with pytest.raises(BudgetError, match="exceeds the remaining"):
+        guard.complete(client, "cheap", [], 1000)  # $0.002 without the schemas, $0.022 with
+    assert client.calls == []
+
+
+def test_reported_cost_is_logged_next_to_ours_and_a_mismatch_warns(guard):
+    client = FakeClient()
+    ours = 1820 / 1e6
+    client.reply = Reply("ok", 1000, 500, 200, reported_cost_usd=ours * 1.1)
+    guard.complete(client, "cheap", [], 600)
+    client.reply = Reply("ok", 1000, 500, 200, reported_cost_usd=ours * 1.3)
+    with pytest.warns(UserWarning, match="provider reports"):
+        guard.complete(client, "cheap", [], 600)
+    within, off = read_log(guard.log_path)
+    assert within["cost_usd"] == pytest.approx(ours)
+    assert within["reported_cost_usd"] == pytest.approx(ours * 1.1)
+    assert off["reported_cost_usd"] == pytest.approx(ours * 1.3)
+
+
+@pytest.mark.parametrize(
+    "name, value",
+    [
+        ("OPENROUTER_API_KEY", f"<{KEY.replace('sk-test', 'sk-or-v1')}>"),
+        ("OPENROUTER_API_KEY", "sk-ant-api03-0123456789"),
+        ("ANTHROPIC_API_KEY", "sk-or-v1-0123456789"),
+        ("ANTHROPIC_API_KEY", ""),
+    ],
+)
+def test_malformed_keys_are_refused_without_showing_them(monkeypatch, name, value):
+    from qre_agent.spend import api_key
+
+    monkeypatch.setenv(name, value)
+    monkeypatch.setattr("qre_agent.spend.load_keys", lambda: None)
+    with pytest.raises(RuntimeError, match=name) as refused:
+        api_key(name)
+    assert not value or value not in str(refused.value)
+
+
+def test_well_formed_keys_are_returned(monkeypatch):
+    from qre_agent.spend import api_key
+
+    monkeypatch.setattr("qre_agent.spend.load_keys", lambda: None)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-0123456789")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-0123456789")
+    assert api_key("OPENROUTER_API_KEY") == "sk-or-v1-0123456789"
+    assert api_key("ANTHROPIC_API_KEY") == "sk-ant-api03-0123456789"
