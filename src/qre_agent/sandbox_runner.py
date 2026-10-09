@@ -15,6 +15,7 @@ PROCESS_EVENTS = {
     "subprocess.Popen", "os.system", "os.exec", "os.spawn", "os.posix_spawn", "os.startfile",
     "os.fork", "os.forkpty",
 }  # fmt: skip
+# Every ctypes.* event is blocked (dlopen, dlsym, string_at, ...): ctypes is a way around the hook.
 # The agent has no reason to change the filesystem other than through open() in its own dir.
 FILESYSTEM_EVENTS = {
     "os.remove", "os.rename", "os.rmdir", "os.mkdir", "os.truncate", "os.chmod", "os.chown",
@@ -43,7 +44,7 @@ def audit_hook(run_dir):
     read_only = {_real(p) for p in (sys.prefix, sys.base_prefix, sys.exec_prefix)}
 
     def hook(event, args):
-        if event in PROCESS_EVENTS or event in FILESYSTEM_EVENTS:
+        if event in PROCESS_EVENTS or event in FILESYSTEM_EVENTS or event.startswith("ctypes."):
             raise PermissionError(f"sandbox: {event} is blocked")
         if event != "open" or isinstance(args[0], int):  # an fd was already opened and checked
             return

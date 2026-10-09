@@ -107,6 +107,13 @@ def test_sandbox_blocks_processes(call, event):
         run_circuit_code(ESCAPE + call)
 
 
+def test_sandbox_blocks_ctypes():
+    reach = ESCAPE + "import numpy.ctypeslib as cl\nct = cl.ctypes\n"
+    for call in ("ct.pythonapi.Py_GetVersion()", "ct.string_at(id(0), 1)", "ct.CDLL('x')"):
+        with pytest.raises(SandboxError, match="sandbox: ctypes.[a-z_]+ is blocked"):
+            run_circuit_code(reach + call)
+
+
 def test_sandbox_blocks_filesystem_changes(tmp_path):
     with pytest.raises(SandboxError, match="sandbox: os.remove is blocked"):
         run_circuit_code(ESCAPE + f"os.remove({str(tmp_path / 'x')!r})")

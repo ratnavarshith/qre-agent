@@ -54,7 +54,9 @@ The circuit comes back as QPY.
 
 **This is still a guardrail against mistakes, not a security boundary.** Python can't be sandboxed in-process.
 - Code can reach `os` through attributes of allowed modules: `qiskit.utils.parallel.os` passes the static check. The audit hook then stops it from opening files outside the run directory or starting processes, and tests cover exactly that escape.
-- Audit hooks only see what raises an event. `ctypes` can call C functions directly, and the hook doesn't block it.
+- Audit hooks only see what raises an event. `ctypes` is reachable through allowed modules (`numpy.ctypeslib.ctypes`), so the hook blocks every `ctypes.*` event. This Python (3.11.9, Windows) raises `ctypes.dlopen`, `ctypes.dlsym`, `ctypes.string_at`, `ctypes.addressof`, `ctypes.create_string_buffer`, `ctypes.get_errno` and `ctypes.set_errno`; it doesn't raise `ctypes.call_function`, so the block works at the library load and symbol lookup, not at the call. What gets through:
+  - Calling a C function pointer that something already holds, since no event fires at the call.
+  - `ctypes.memmove`, `ctypes.cast` and `ctypes.c_int` also raise no event. `id(obj)` is the object's address in CPython, so an escape can read or write the interpreter's memory without any blocked event, including memory the hook uses.
 - The socket patch only covers the `socket` module's Python layer.
 
 That's acceptable for code our own LLM writes from a problem statement. It isn't acceptable for untrusted users' code. For that, use a container (e.g. `docker run --network none`, read-only filesystem, CPU and memory limits). That's on the to-build list.
