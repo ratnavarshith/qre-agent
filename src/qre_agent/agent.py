@@ -140,7 +140,14 @@ def run(
     trace_path = Path(runs_dir) / f"{run_id}.jsonl"
     trace_path.parent.mkdir(parents=True, exist_ok=True)
     totals = dict.fromkeys(
-        ("input_tokens", "cached_tokens", "output_tokens", "reasoning_tokens"), 0
+        (
+            "input_tokens",
+            "cached_tokens",
+            "cache_write_tokens",
+            "output_tokens",
+            "reasoning_tokens",
+        ),
+        0,
     ) | {"cost_usd": 0.0, "reported_cost_usd": 0.0, "llm_s": 0.0, "tool_s": 0.0}
 
     with trace_path.open("w", encoding="utf-8") as f:
@@ -182,10 +189,12 @@ def run(
                     reply.input_tokens,
                     reply.output_tokens,
                     reply.cached_tokens,
+                    reply.cache_write_tokens,
                 )
                 usage = {
                     "input_tokens": reply.input_tokens,
                     "cached_tokens": reply.cached_tokens,
+                    "cache_write_tokens": reply.cache_write_tokens,
                     "output_tokens": reply.output_tokens,
                     "reasoning_tokens": getattr(reply, "reasoning_tokens", 0),
                     "cost_usd": usd,

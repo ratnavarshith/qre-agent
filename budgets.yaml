@@ -10,9 +10,10 @@ caps:
 # USD per 1M tokens, keyed by the model id as passed to the client.
 # conservative: max regional price on OpenRouter, checked 2026-10-08
 # input_tokens counts all prompt tokens, cached ones included; cache_read is the price of those
-# (the input price if left out). A model without an entry here is refused.
+# (the input price if left out). cache_write is the price of tokens written to the cache
+# (Anthropic: 1.25x input, confirmed from OpenRouter billing 2026-10-09; the input price if left out). A model without an entry here is refused.
 prices:
   google/gemini-2.5-flash: {input: 0.30, output: 2.50, cache_read: 0.03}  # cache_read from OpenRouter billing, 2026-10-08 trial
   deepseek/deepseek-v3.2: {input: 0.26, output: 0.42, cache_read: 0.26}
-  anthropic/claude-haiku-4.5: {input: 1.10, output: 5.50, cache_read: 0.11}
-  anthropic/claude-sonnet-5: {input: 2.20, output: 11.00, cache_read: 0.22}
+  anthropic/claude-haiku-4.5: {input: 1.10, output: 5.50, cache_read: 0.11, cache_write: 1.375}
+  anthropic/claude-sonnet-5: {input: 2.20, output: 11.00, cache_read: 0.22, cache_write: 2.75}

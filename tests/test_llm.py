@@ -75,3 +75,51 @@ def test_missing_key_is_reported_by_name_only(monkeypatch):
     monkeypatch.setattr("qre_agent.spend.load_keys", lambda: None)
     with pytest.raises(RuntimeError, match="OPENROUTER_API_KEY is missing or malformed"):
         OpenRouter()
+
+
+def test_cache_marks_system_prompt_and_last_tool_for_anthropic_only(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", KEY)
+    monkeypatch.setattr("qre_agent.spend.load_keys", lambda: None)
+    client = OpenRouter(SCHEMAS, cache=True)
+    messages = [{"role": "system", "content": "rules"}, {"role": "user", "content": "task"}]
+    mark = {"type": "ephemeral"}
+
+    body = client.body("anthropic/claude-haiku-4.5", messages, 100)
+    assert body["messages"][0]["content"] == [
+        {"type": "text", "text": "rules", "cache_control": mark}
+    ]
+    assert body["messages"][1] == messages[1]
+    assert [bool(t.get("cache_control")) for t in body["tools"]] == [False] * (len(SCHEMAS) - 1) + [
+        True
+    ]
+    assert (
+        messages[0]["content"] == "rules" and "cache_control" not in client.tools[-1]
+    )  # untouched
+
+    for model in ("google/gemini-2.5-flash", "deepseek/deepseek-v3.2"):
+        other = client.body(model, messages, 100)
+        assert other["messages"] == messages and other["tools"] == client.tools
+
+
+def test_cache_is_off_by_default(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", KEY)
+    monkeypatch.setattr("qre_agent.spend.load_keys", lambda: None)
+    messages = [{"role": "system", "content": "rules"}]
+    assert (
+        OpenRouter(SCHEMAS).body("anthropic/claude-haiku-4.5", messages, 100)["messages"]
+        == messages
+    )
+
+
+def test_parse_reads_cache_write_tokens():
+    data = {
+        "choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}],
+        "usage": {
+            "prompt_tokens": 2893,
+            "completion_tokens": 125,
+            "prompt_tokens_details": {"cached_tokens": 1830, "cache_write_tokens": 964},
+        },
+    }
+    r = parse(data)
+    assert (r.input_tokens, r.cached_tokens, r.cache_write_tokens) == (2893, 1830, 964)
+    assert parse(COMPLETION).cache_write_tokens == 0

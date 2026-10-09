@@ -11,6 +11,7 @@ from .spend import Reply, api_key
 
 URL = "https://openrouter.ai/api/v1/chat/completions"
 TIMEOUT_S = 180
+CACHE_CONTROL = {"type": "ephemeral"}
 
 
 @dataclass(frozen=True)
@@ -25,22 +26,28 @@ class ChatReply(Reply):
 
 
 class OpenRouter:
-    """`schemas` are tools.SCHEMAS-style tool descriptions; they are sent with every call."""
+    """`schemas` are tools.SCHEMAS-style tool descriptions; they are sent with every call. With
+    `cache`, calls to anthropic/ models mark the system prompt and the last tool definition with
+    cache_control, so Anthropic caches the tools and system prompt (its prefix order is tools,
+    system, messages); other models cache on their own or not at all."""
 
-    def __init__(self, schemas=(), seed=None, url=URL, timeout=TIMEOUT_S):
+    def __init__(self, schemas=(), seed=None, url=URL, timeout=TIMEOUT_S, cache=False):
         api_key("OPENROUTER_API_KEY")  # fail here, before any call, on a missing or malformed key
         self.tools = [{"type": "function", "function": s} for s in schemas]
-        self.seed, self.url, self.timeout = seed, url, timeout
+        self.seed, self.url, self.timeout, self.cache = seed, url, timeout, cache
 
     def body(self, model, messages, max_tokens):
+        tools = self.tools
+        if self.cache and model.startswith("anthropic/"):
+            messages, tools = mark_cacheable(messages, tools)
         body = {
             "model": model,
             "messages": messages,
             "max_tokens": max_tokens,
             "usage": {"include": True},  # usage accounting: the cost OpenRouter billed
         }
-        if self.tools:
-            body["tools"] = self.tools
+        if tools:
+            body["tools"] = tools
         if self.seed is not None:
             body["seed"] = self.seed
         return body
@@ -63,6 +70,20 @@ class OpenRouter:
             ) from None
 
 
+def mark_cacheable(messages, tools):
+    """Copies of messages and tools with cache_control on the system message's text and on the
+    last tool. The originals are left alone: the agent keeps and re-sends them."""
+    messages = [
+        {**m, "content": [{"type": "text", "text": m["content"], "cache_control": CACHE_CONTROL}]}
+        if m["role"] == "system" and isinstance(m["content"], str)
+        else m
+        for m in messages
+    ]
+    if tools:
+        tools = [*tools[:-1], {**tools[-1], "cache_control": CACHE_CONTROL}]
+    return messages, tools
+
+
 def parse(data):
     """Normalize a chat completion: input_tokens counts all prompt tokens, cached included."""
     if data.get("error"):
@@ -80,6 +101,7 @@ def parse(data):
         input_tokens=usage["prompt_tokens"],
         output_tokens=usage["completion_tokens"],
         cached_tokens=prompt.get("cached_tokens") or 0,
+        cache_write_tokens=prompt.get("cache_write_tokens") or 0,
         reported_cost_usd=usage.get("cost"),
         message=message,
         finish_reason=choice.get("finish_reason"),

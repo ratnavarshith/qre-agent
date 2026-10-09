@@ -31,10 +31,11 @@ class BudgetError(Exception):
 @dataclass(frozen=True)
 class Reply:
     text: str
-    input_tokens: int  # all prompt tokens, cached ones included
+    input_tokens: int  # all prompt tokens, cached and cache-written ones included
     output_tokens: int
     cached_tokens: int = 0
     reported_cost_usd: float | None = None  # what the provider says it billed, if it says
+    cache_write_tokens: int = 0  # prompt tokens written to the cache (billed above input price)
 
 
 def load_keys():
@@ -53,11 +54,15 @@ def api_key(name):
     return key
 
 
-def cost(price, input_tokens, output_tokens, cached_tokens=0):
+def cost(price, input_tokens, output_tokens, cached_tokens=0, written_tokens=0):
     cached_price = price.get("cache_read", price["input"])
-    fresh = input_tokens - cached_tokens
+    written_price = price.get("cache_write", price["input"])
+    fresh = input_tokens - cached_tokens - written_tokens
     return (
-        fresh * price["input"] + cached_tokens * cached_price + output_tokens * price["output"]
+        fresh * price["input"]
+        + cached_tokens * cached_price
+        + written_tokens * written_price
+        + output_tokens * price["output"]
     ) / PER_TOKENS
 
 
@@ -92,10 +97,11 @@ class Guard:
         if model not in self.prices:
             raise BudgetError(f"no price for model {model!r} in budgets.yaml")
         price = self.prices[model]
-        # Worst case: every character of the prompt is a token, and the reply fills max_tokens.
+        # Worst case: every character of the prompt is a token, all of them written to the cache,
+        # and the reply fills max_tokens.
         tools = getattr(client, "tools", None)
         prompt_tokens = len(json.dumps(messages)) + (len(json.dumps(tools)) if tools else 0)
-        worst = cost(price, prompt_tokens, max_tokens)
+        worst = cost(price, prompt_tokens, max_tokens, written_tokens=prompt_tokens)
         if worst > self.remaining():
             raise BudgetError(
                 f"phase {self.phase}: worst case ${worst:.4f} exceeds the remaining "
@@ -107,7 +113,13 @@ class Guard:
             # The request may have been billed, so it counts at its worst case.
             self._log(model, "failed", prompt_tokens, max_tokens, 0, worst)
             raise
-        usd = cost(price, reply.input_tokens, reply.output_tokens, reply.cached_tokens)
+        usd = cost(
+            price,
+            reply.input_tokens,
+            reply.output_tokens,
+            reply.cached_tokens,
+            reply.cache_write_tokens,
+        )
         reported = reply.reported_cost_usd
         if reported is not None and abs(reported - usd) > COST_MISMATCH * usd:
             warnings.warn(
@@ -115,11 +127,28 @@ class Guard:
                 stacklevel=2,
             )
         self._log(
-            model, "ok", reply.input_tokens, reply.output_tokens, reply.cached_tokens, usd, reported
+            model,
+            "ok",
+            reply.input_tokens,
+            reply.output_tokens,
+            reply.cached_tokens,
+            usd,
+            reported,
+            reply.cache_write_tokens,
         )
         return reply
 
-    def _log(self, model, status, input_tokens, output_tokens, cached_tokens, usd, reported=None):
+    def _log(
+        self,
+        model,
+        status,
+        input_tokens,
+        output_tokens,
+        cached_tokens,
+        usd,
+        reported=None,
+        written=0,
+    ):
         record = {
             "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "phase": self.phase,
@@ -128,6 +157,7 @@ class Guard:
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "cached_tokens": cached_tokens,
+            "cache_write_tokens": written,
             "cost_usd": usd,
             "reported_cost_usd": reported,
         }

@@ -127,8 +127,9 @@ def test_every_default_price_is_complete_and_cache_reads_are_not_dearer_than_inp
     prices = yaml.safe_load(BUDGETS_PATH.read_text(encoding="utf-8"))["prices"]
     assert prices
     for model, p in prices.items():
-        assert set(p) == {"input", "output", "cache_read"}, model
+        assert set(p) - {"cache_write"} == {"input", "output", "cache_read"}, model
         assert 0 < p["cache_read"] <= p["input"] < p["output"], model
+        assert p.get("cache_write", p["input"]) >= p["input"], model
 
 
 def test_worst_case_counts_the_tool_schemas_the_client_sends(guard):
@@ -180,3 +181,36 @@ def test_well_formed_keys_are_returned(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-0123456789")
     assert api_key("OPENROUTER_API_KEY") == "sk-or-v1-0123456789"
     assert api_key("ANTHROPIC_API_KEY") == "sk-ant-api03-0123456789"
+
+
+def test_cache_writes_are_billed_at_the_cache_write_price():
+    price = {"input": 1.0, "cache_read": 0.1, "cache_write": 1.25, "output": 2.0}
+    # 600 fresh * 1.0 + 200 cached * 0.1 + 200 written * 1.25 + 500 out * 2.0, per 1M
+    assert cost(price, 1000, 500, 200, 200) == pytest.approx((600 + 20 + 250 + 1000) / 1e6)
+    no_write_price = {"input": 1.0, "output": 2.0}
+    assert cost(no_write_price, 1000, 500, 0, 200) == pytest.approx(2000 / 1e6)
+
+
+def test_guard_logs_cache_writes_and_bills_them(tmp_path):
+    prices = {"m": {"input": 1.0, "cache_read": 0.1, "cache_write": 1.25, "output": 2.0}}
+    budgets = tmp_path / "budgets.yaml"
+    budgets.write_text(yaml.safe_dump({"caps": {"dev": 1}, "prices": prices}))
+    guard = Guard("dev", budgets, tmp_path / "spend.jsonl")
+    client = FakeClient()
+    client.reply = Reply("ok", 1000, 500, 200, cache_write_tokens=300)
+    guard.complete(client, "m", [{"role": "user", "content": "hi"}], 600)
+    (record,) = read_log(guard.log_path)
+    assert record["cache_write_tokens"] == 300
+    assert record["cost_usd"] == pytest.approx((500 + 20 + 375 + 1000) / 1e6)
+
+
+def test_worst_case_prices_the_whole_prompt_as_a_cache_write(tmp_path):
+    prices = {"m": {"input": 1.0, "cache_write": 1.25, "output": 2.0}}
+    budgets = tmp_path / "budgets.yaml"
+    budgets.write_text(yaml.safe_dump({"caps": {"dev": 0.00035}, "prices": prices}))
+    guard = Guard("dev", budgets, tmp_path / "spend.jsonl")
+    messages = [{"role": "user", "content": "x" * 100}]
+    prompt = len(json.dumps(messages))
+    assert prompt * 1.25 / 1e6 + 100 * 2 / 1e6 > 0.00035 > prompt * 1.0 / 1e6 + 100 * 2 / 1e6
+    with pytest.raises(BudgetError):
+        guard.complete(FakeClient(), "m", messages, 100)
