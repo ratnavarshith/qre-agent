@@ -15,9 +15,14 @@ The agent turns a plain-English problem into a circuit, estimates it on both arc
 | tool | input | output |
 |---|---|---|
 | `build_circuit` | `code`: Python that assigns a `QuantumCircuit` to `circuit` | `circuit_id`, qubits, clbits, depth, op counts; or the error |
+| `build_benchmark` | `family` (qft, qpe, tfim, adder, grover), `n` | the same, plus `family` and `n`; the circuit is `circuits.FAMILIES[family](n)` |
 | `estimate_surface` | `circuit_id`, optional `physical_error_rate`, `error_budget` | `estimate_surface`'s result without the frontier, plus `result_id`, `circuit` and `passes` (error ≤ budget) |
-| `estimate_bicycle` | `circuit_id`, optional `code` (gross, two-gross), `physical_error_rate` (1e-3 or 1e-4), `error_budget` | `estimate_bicycle`'s result, plus `result_id` and `circuit` |
+| `estimate_bicycle` | `circuit_id`, optional `code` (gross, two-gross), `physical_error_rate` (`"1e-3"` or `"1e-4"`, a string), `error_budget` | `estimate_bicycle`'s result, plus `result_id` and `circuit` |
 | `verify` | `surface_result`, `bicycle_result` (result ids), `final_answer` (JSON string, below), optional `sweep` of `{size, surface, bicycle}` | `{"passed": bool, "failures": [{"check", "reason"}]}` |
+
+Every `enum` in the schemas is a string enum. Gemini's function-calling schema allows `enum` on STRING only. In the first trial, the numeric enum on bicycle's `physical_error_rate` went with Gemini calling `estimate_bicycle` with `{}` in all three tasks. So the tool takes `"1e-3"` or `"1e-4"` and converts it; a number is accepted too.
+
+`build_circuit` rejects circuits that contain `reset` or `initialize` (which adds resets), searching inside composite instructions, because the bicycle compiler can't compile resets. Its description says so, and that qubits start in |0>.
 
 Defaults come from `assumptions/default.yaml`. The wrappers add `circuit: {circuit_id, num_qubits}` to each result. Check (a) needs it, because the estimators' own `logical_qubits` include each layout's overhead and differ by design: for a 4-qubit QFT, surface says 15 and bicycle says 12.
 
@@ -85,7 +90,7 @@ The first layer, `fields_match`, checks the answer field by field:
 
 This catches surface and bicycle numbers swapped between architectures, which the second layer would miss because both numbers exist somewhere in the tool outputs. An answer that isn't JSON in this shape fails as `answer_format`.
 
-The second layer, `numbers_match`, checks the prose. Every number written in `summary` must equal some numeric value in the tool outputs, at the precision it's written. "19.5" matches 19.509, "1347" matches 1346.72, and "1346" doesn't. The check reads commas (`140,015`), e-notation (`4.64e-04`), `× 10^k` and `10^k`. It doesn't read digits inside words like `r1` or `two-gross`. Sweep sizes count as known numbers too.
+The second layer, `numbers_match`, checks the prose. Every number written in `summary` must equal some numeric value in the tool outputs, at the precision it's written. "19.5" matches 19.509, "1347" matches 1346.72, and "1346" doesn't. The check reads commas (`140,015`), e-notation (`4.64e-04`), `× 10^k` and `10^k`. It doesn't read digits inside words like `r1` or `two-gross`. Sweep sizes count as known numbers too, and so does every number written in the task prompt ("8-bit"), since the user gave it.
 - Consequence: ratios ("3x fewer"), percentages and differences fail unless a tool produced them. So the agent has to quote tool numbers, or a tool has to compute the comparison.
 - Weakness: a number written with low precision is a weak check. "1e-3" matches anything from 0.0005 to 0.0015.
 - Unicode superscripts (10⁻³) aren't parsed, so they fail. That's a false alarm, which is the safe direction.
@@ -101,6 +106,24 @@ A reply without tool calls is the final answer. A ```` ```json ```` fence around
 Each run writes `runs/<run_id>.jsonl`: a `meta` record (task, model, limits, seed, assumptions, versions, hardware), every message, every LLM call (message, tokens input/cached/output/reasoning, our cost, OpenRouter's reported cost, latency), every tool call (arguments, result, latency) and a `final` record (stop reason, answer, verification, totals). The `final` record is written even when a call raises.
 
 `src/qre_agent/llm.py` is the OpenRouter client. It sends the tool schemas with every call and asks for usage accounting. The guard logs OpenRouter's reported cost next to the `budgets.yaml` estimate in `runs/spend.jsonl` and warns when they differ by more than 20% of ours. The guard's worst case counts the tool schemas too.
+
+## Task types and grading
+
+The eval grader sorts tasks into two types.
+
+**Benchmark tasks** name one of the families in `circuits.py`: QFT, phase estimation, transverse-field Ising model, ripple-carry adder, Grover search. The system prompt tells the agent to use `build_benchmark` for them, so the circuit is ours and the estimates are deterministic. A run is correct when:
+- it called `build_benchmark` with the right family and size;
+- the results the answer cites equal the reference row in `results/comparison` (same p, budget and bicycle code) exactly: physical qubits, runtime and qubit-seconds;
+- `verify` passes;
+- every assumption the user didn't give is stated (the trial script checks the physical error rate with a regex; a human reads the rest).
+
+**Custom-circuit tasks** describe a circuit that isn't a benchmark, or ask the agent to write it. The agent's circuit can legitimately differ from any reference (the trial's QFT without swaps, a different adder layout), so its numbers aren't compared to a fixed row. A run is correct when `verify` passes and, for n ≤ 8, the circuit passes `semantics.check` (`src/qre_agent/semantics.py`):
+- **qft**: its unitary equals the QFT, with or without the final swaps, up to global phase.
+- **adder**: on six basis inputs (0+0, 1+1, max+1, max+max and two seeded random pairs), simulation gives a + b. The circuit is simulated classically when it reduces to X/CX/CCX/SWAP, else with a statevector (at most 20 qubits). The layout comes from registers named `a`, `b`, `cout` when present (qiskit's adders), else a = qubits 0..n-1, b = n..2n-1 and the sum in b then qubit 2n; a task can give the layout explicitly.
+- **grover**: the instruction named `oracle` maps |x>|0> to ±|x>|0> with exactly one minus sign (on the marked state, if the task names one). A whole Grover circuit can't be split into oracle and diffusion automatically, so a custom Grover task must ask for the oracle as an instruction named `oracle`.
+- **qpe, tfim**: no semantics; the T count and rotation count (as the surface estimate counts them) must each be within 10% of the benchmark circuit's.
+
+These checks need the task's family and size, so they belong to the grader, not to `verify`. They don't scale past small n: the QFT check builds a 2^n × 2^n unitary.
 
 ## Still to build
 

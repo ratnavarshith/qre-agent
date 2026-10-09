@@ -12,8 +12,9 @@ from dataclasses import replace
 from pathlib import Path
 
 from qiskit import qpy
+from qiskit.circuit.library import get_standard_gate_name_mapping
 
-from . import bicycle, surface
+from . import bicycle, circuits, surface
 from .assumptions import load_assumptions
 from .verify import verify
 
@@ -25,6 +26,8 @@ BANNED_NAMES = {
 ENV_KEEP = ("PATH", "SYSTEMROOT", "TEMP", "TMP")  # nothing else, so no API keys
 TIMEOUT_S = 60
 RUNNER = Path(__file__).with_name("sandbox_runner.py")
+STANDARD_GATES = set(get_standard_gate_name_mapping())
+BICYCLE_P = {"1e-3": 1e-3, "1e-4": 1e-4}  # strings: Gemini allows enum on STRING only
 DROP = ("frontier",)  # every point on surface's Pareto frontier; long and not needed by the agent
 
 
@@ -57,6 +60,19 @@ def check_code(code, allowed=ALLOWED_IMPORTS):
             raise SandboxError(f"access to {node.attr!r} is not allowed")
 
 
+def find_reset(circuit):
+    """Name of the first reset found, looking inside composite instructions; `initialize` adds
+    resets. Standard gates are not opened."""
+    for inst in circuit.data:
+        op = inst.operation
+        if op.name in ("reset", "initialize"):
+            return op.name
+        definition = None if op.name in STANDARD_GATES else getattr(op, "definition", None)
+        if definition is not None and (found := find_reset(definition)):
+            return found
+    return None
+
+
 def run_circuit_code(code, timeout=TIMEOUT_S, allowed=ALLOWED_IMPORTS):
     """Run code that assigns a QuantumCircuit to `circuit` in a fresh process with a minimal
     environment, sockets disabled and a timeout. Returns the circuit; raises SandboxError."""
@@ -83,6 +99,16 @@ def run_circuit_code(code, timeout=TIMEOUT_S, allowed=ALLOWED_IMPORTS):
             return qpy.load(f)[0]
 
 
+BENCHMARKS = {  # what build_benchmark builds, from circuits.py
+    "qft": "n-qubit quantum Fourier transform with the final swaps",
+    "qpe": f"phase estimation of a phase gate with phase 2*pi*{circuits.QPE_PHASE:.4g} on its |1> "
+    "eigenstate, n counting qubits (n + 1 qubits)",
+    "tfim": f"1D transverse-field Ising chain of n spins, {circuits.TFIM_STEPS} Trotter steps of "
+    f"dt {circuits.TFIM_DT} (J = h = 1)",
+    "adder": "n-bit Cuccaro (CDKM) ripple-carry adder with carry-out (2n + 2 qubits)",
+    "grover": f"Grover search on n >= 3 qubits for the all-ones state, {circuits.GROVER_ITERATIONS} "
+    "iterations, multi-controlled Z as a Toffoli ladder on n - 2 ancillas (2n - 2 qubits)",
+}
 _CIRCUIT_ID = {"type": "string", "description": "circuit_id returned by build_circuit"}
 _P = {"type": "number", "description": "physical error rate (default from assumptions)"}
 _BUDGET = {"type": "number", "description": "total logical error budget (default 1e-3)"}
@@ -92,13 +118,31 @@ SCHEMAS = [
         "description": (
             "Run Python code that builds the problem's circuit with Qiskit and assigns it to a "
             f"variable named `circuit`. Allowed imports: {', '.join(ALLOWED_IMPORTS)}. "
-            f"No files, no network, {TIMEOUT_S} s limit. Returns a circuit_id and a summary, "
-            "or the error."
+            f"No files, no network, {TIMEOUT_S} s limit. Qubits start in |0>: no reset or "
+            "initialize (the bicycle compiler can't compile resets); prepare basis states with X. "
+            "Returns a circuit_id and a summary, or the error."
         ),
         "parameters": {
             "type": "object",
             "properties": {"code": {"type": "string", "description": "Python source"}},
             "required": ["code"],
+        },
+    },
+    {
+        "name": "build_benchmark",
+        "description": (
+            "Build a standard benchmark circuit, with measurements, and return its circuit_id and "
+            "a summary. Use it whenever the task names one of these families: "
+            + "; ".join(f"{k}: {v}" for k, v in BENCHMARKS.items())
+            + ". QFT and QPE above n = 20 hit the bicycle path's angle tolerance."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "family": {"type": "string", "enum": list(BENCHMARKS)},
+                "n": {"type": "integer", "description": "problem size (qubits, bits or spins)"},
+            },
+            "required": ["family", "n"],
         },
     },
     {
@@ -125,7 +169,11 @@ SCHEMAS = [
             "properties": {
                 "circuit_id": _CIRCUIT_ID,
                 "code": {"type": "string", "enum": list(bicycle.MODULE)},
-                "physical_error_rate": {**_P, "enum": list(bicycle.MODELS)},
+                "physical_error_rate": {
+                    "type": "string",
+                    "enum": list(BICYCLE_P),
+                    "description": "physical error rate (default from assumptions)",
+                },
                 "error_budget": _BUDGET,
             },
             "required": ["circuit_id"],
@@ -184,8 +232,10 @@ TOOLS = [s["name"] for s in SCHEMAS]
 class Toolbox:
     """One agent session: circuits and results by id, and every output the agent has seen."""
 
-    def __init__(self, assumptions=None):
+    def __init__(self, assumptions=None, prompt=""):
+        """`prompt` is the task; numbers in it count as known to verify."""
         self.assumptions = assumptions or load_assumptions()
+        self.prompt = prompt
         self.circuits, self.results, self.outputs = {}, {}, []
 
     def call(self, name, arguments):
@@ -200,6 +250,23 @@ class Toolbox:
 
     def build_circuit(self, code):
         circuit = run_circuit_code(code)
+        if reset := find_reset(circuit):
+            raise ValueError(
+                f"circuit contains {reset!r}, which resets qubits; the bicycle compiler can't "
+                "compile resets. Qubits start in |0>: prepare basis states with X gates instead."
+            )
+        return self._store(circuit)
+
+    def build_benchmark(self, family, n):
+        if family not in BENCHMARKS:
+            raise ValueError(f"unknown family {family!r}, expected one of {list(BENCHMARKS)}")
+        if family == "grover" and n < 3:
+            raise ValueError("grover needs n >= 3")
+        if n < 1:
+            raise ValueError("n must be >= 1")
+        return {"family": family, "n": n} | self._store(circuits.FAMILIES[family](n))
+
+    def _store(self, circuit):
         circuit_id = f"c{len(self.circuits) + 1}"
         self.circuits[circuit_id] = circuit
         return {
@@ -227,6 +294,13 @@ class Toolbox:
         return self._record("surface", circuit_id, {**r, "passes": r["error"] <= a.error_budget})
 
     def estimate_bicycle(self, circuit_id, code=None, physical_error_rate=None, error_budget=None):
+        if physical_error_rate is not None:
+            p = BICYCLE_P.get(physical_error_rate, physical_error_rate)
+            if p not in BICYCLE_P.values():
+                raise ValueError(
+                    f"physical_error_rate must be '1e-3' or '1e-4', got {physical_error_rate!r}"
+                )
+            physical_error_rate = p
         a = self._assumptions(
             bicycle_code=code, physical_error_rate=physical_error_rate, error_budget=error_budget
         )
@@ -255,4 +329,5 @@ class Toolbox:
             final_answer,
             self.outputs,
             points,
+            self.prompt,
         )

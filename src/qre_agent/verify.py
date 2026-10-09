@@ -71,6 +71,8 @@ def _leaves(value):
     if isinstance(value, (list, tuple)):
         for v in value:
             yield from _leaves(v)
+    elif isinstance(value, Decimal):
+        yield value
     elif isinstance(value, (int, float)) and not isinstance(value, bool):
         yield Decimal(repr(value))
 
@@ -111,13 +113,14 @@ def fields_match(estimates, results, required):
     return f"answer does not report {missing}" if missing else None
 
 
+def numbers_in(text):
+    return [(m[0], _written(m)) for m in NUMBER.finditer(text.replace("−", "-"))]
+
+
 def numbers_match(text, outputs):
     """Every number written in the prose equals some tool output at the precision written."""
     known = set(_leaves(outputs))
-    unmatched = [
-        m[0] for m in NUMBER.finditer(text.replace("−", "-"))
-        if not any(_close(_written(m), t) for t in known)
-    ]  # fmt: skip
+    unmatched = [w for w, n in numbers_in(text) if not any(_close(n, t) for t in known)]
     return f"numbers not in any tool output: {unmatched}" if unmatched else None
 
 
@@ -136,9 +139,10 @@ def grows_with_size(sweep):
     return None
 
 
-def verify(surface, bicycle, final_answer, outputs=(), sweep=()):
+def verify(surface, bicycle, final_answer, outputs=(), sweep=(), prompt=""):
     """`final_answer` is the JSON string described above, `outputs` the tool outputs the agent
-    saw and `sweep` [{size, surface, bicycle}]."""
+    saw, `sweep` [{size, surface, bicycle}] and `prompt` the task: numbers written in it
+    ("8-bit") count as known."""
     failures = []
 
     def add(check, reason):
@@ -157,6 +161,7 @@ def verify(surface, bicycle, final_answer, outputs=(), sweep=()):
         required = [surface["result_id"], bicycle["result_id"]]
         add("fields_match", fields_match(answer["estimates"], results, required))
         sources = [surface, bicycle, list(outputs), [p["size"] for p in sweep]]
+        sources.append([n for _, n in numbers_in(prompt)])
         add("numbers_match", numbers_match(answer["summary"], sources))
     if sweep:
         add("grows_with_size", grows_with_size(sweep))

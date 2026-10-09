@@ -74,9 +74,14 @@ def check(task, toolbox, result):
                 for f, v in expected.items()
             }
             out[arch]["p"] = got.get("assumptions", {}).get("physical_error_rate")
-    correct = bool(out) and all(
-        c["ok"] for a in out.values() for c in a.values() if isinstance(c, dict)
-    )
+    # Benchmark task: the cited circuit must come from build_benchmark with the expected family, n.
+    circuit_ids = {r["circuit"]["circuit_id"] for r in cited.values()} if result.answer else set()
+    built = [o for o in toolbox.outputs if o.get("circuit_id") in circuit_ids]
+    benchmark = [(o.get("family"), o.get("n")) for o in built]
+    row = task["expected"]["row"]
+    fields_ok = all(c["ok"] for a in out.values() for c in a.values() if isinstance(c, dict))
+    out["benchmark"] = {"got": benchmark, "ok": benchmark == [(row["family"], row["n"])]}
+    correct = bool(result.answer) and fields_ok and out["benchmark"]["ok"]
     summary = result.answer["summary"] if result.answer else ""
     stated = None
     if "must_state_assumption" in task:

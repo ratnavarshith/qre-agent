@@ -179,3 +179,11 @@ def test_a_refused_call_still_closes_the_trace(guard, tmp_path):
         go(FakeClient(reply(ANSWER)), guard, tmp_path, max_tokens=10**9)
     final = trace(tmp_path / "t1.jsonl")[-1]
     assert final["type"] == "final" and final["stop_reason"].startswith("error: BudgetError")
+
+
+def test_numbers_from_the_task_are_known_to_the_automatic_verify(guard, tmp_path):
+    text = ANSWER.replace("Surface needs", "For the 8-bit case, surface needs")
+    client = FakeClient(*ESTIMATE, reply(text))
+    result = run("Compare an 8-bit adder", client, guard, "fake", "t1", StubToolbox(),
+                 runs_dir=tmp_path)  # fmt: skip
+    assert result.verification == {"passed": True, "failures": []}

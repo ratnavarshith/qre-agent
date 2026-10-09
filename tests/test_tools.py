@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 import pytest
+from qiskit import QuantumCircuit
 
 from qre_agent.tools import (
     ALLOWED_IMPORTS,
@@ -188,3 +189,92 @@ def test_tools_end_to_end_on_qft4():
     answer["summary"] += " That saves about 5000 qubits."
     args["final_answer"] = json.dumps(answer)
     assert json.loads(tb.call("verify", args))["failures"][0]["check"] == "numbers_match"
+
+
+def test_every_enum_is_a_string_enum():
+    # Gemini's function-calling schema allows enum on STRING only; a numeric enum made Gemini call
+    # estimate_bicycle with {} in every trial task.
+    for schema in SCHEMAS:
+        for name, prop in schema["parameters"]["properties"].items():
+            if "enum" in prop:
+                assert prop["type"] == "string", (schema["name"], name)
+                assert all(isinstance(v, str) for v in prop["enum"]), (schema["name"], name)
+
+
+@pytest.mark.parametrize("p, expected", [("1e-3", 1e-3), ("1e-4", 1e-4), (1e-4, 1e-4)])
+def test_bicycle_error_rate_is_converted_from_its_string(monkeypatch, p, expected):
+    seen = []
+    monkeypatch.setattr(
+        "qre_agent.tools.bicycle.estimate_bicycle",
+        lambda circuit, a: seen.append(a.physical_error_rate) or {},
+    )
+    tb = Toolbox()
+    tb.circuits["c1"] = QuantumCircuit(1)
+    out = json.loads(tb.call("estimate_bicycle", {"circuit_id": "c1", "physical_error_rate": p}))
+    assert "error" not in out and seen == [expected]
+
+
+def test_bicycle_error_rate_outside_the_models_is_a_clear_error():
+    tb = Toolbox()
+    tb.circuits["c1"] = QuantumCircuit(1)
+    out = tb.call("estimate_bicycle", {"circuit_id": "c1", "physical_error_rate": "1e-2"})
+    assert "'1e-3' or '1e-4'" in json.loads(out)["error"]
+
+
+TWO = "from qiskit import QuantumCircuit\ncircuit = QuantumCircuit(2)\n"
+RESET_CODE = [
+    TWO + "circuit.reset(0)\n",
+    TWO + "circuit.initialize([0, 1], 0)\n",
+    TWO
+    + "inner = QuantumCircuit(1)\ninner.reset(0)\ncircuit.append(inner.to_instruction(), [1])\n",
+]
+
+
+@pytest.mark.parametrize("code", RESET_CODE)
+def test_build_circuit_rejects_resets(code):
+    tb = Toolbox()
+    error = json.loads(tb.call("build_circuit", {"code": code}))["error"]
+    assert "reset" in error and "bicycle compiler" in error
+    assert tb.circuits == {}
+
+
+def test_build_circuit_description_warns_about_resets():
+    (schema,) = [s for s in SCHEMAS if s["name"] == "build_circuit"]
+    assert "reset" in schema["description"] and "initialize" in schema["description"]
+
+
+@pytest.mark.parametrize(
+    "family, n, qubits",
+    [("qft", 4, 4), ("qpe", 4, 5), ("tfim", 4, 4), ("adder", 8, 18), ("grover", 8, 14)],
+)
+def test_build_benchmark_stores_the_family_circuit(family, n, qubits):
+    from qre_agent.circuits import FAMILIES
+
+    tb = Toolbox()
+    out = json.loads(tb.call("build_benchmark", {"family": family, "n": n}))
+    assert (out["circuit_id"], out["family"], out["n"], out["num_qubits"]) == (
+        "c1",
+        family,
+        n,
+        qubits,
+    )
+    assert tb.circuits["c1"] == FAMILIES[family](n)
+
+
+@pytest.mark.parametrize(
+    "args, error",
+    [
+        ({"family": "shor", "n": 4}, "unknown family 'shor'"),
+        ({"family": "grover", "n": 2}, "n >= 3"),
+    ],
+)
+def test_build_benchmark_errors(args, error):
+    assert error in json.loads(Toolbox().call("build_benchmark", args))["error"]
+
+
+def test_system_prompt_points_named_families_to_build_benchmark():
+    from qre_agent.agent import system_prompt
+    from qre_agent.assumptions import load_assumptions
+
+    text = system_prompt(load_assumptions())
+    assert "build_benchmark" in text and "ripple-carry adder" in text

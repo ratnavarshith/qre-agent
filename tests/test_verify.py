@@ -200,3 +200,13 @@ def test_verify_checks_every_sweep_point():
     points[2]["bicycle"] = {**points[2]["bicycle"], "physical_qubit_seconds": -1.0}
     checks = [f["check"] for f in verify(*ADDER[0][1:], ADDER_4, sweep=points)["failures"]]
     assert checks == ["physical_bounds", "grows_with_size"]
+
+
+def test_numbers_in_the_task_prompt_count_as_known():
+    text = answer("An 8-bit adder: surface 140,015 physical qubits, two-gross 1,226.", S_EST, B_EST)
+    failed = verify(SURFACE, BICYCLE, text)
+    assert failed["failures"] == [
+        {"check": "numbers_match", "reason": "numbers not in any tool output: ['8']"}
+    ]
+    prompt = "How many physical qubits does an 8-bit ripple-carry adder need on each architecture?"
+    assert verify(SURFACE, BICYCLE, text, prompt=prompt)["passed"]

@@ -27,8 +27,11 @@ surface code (Microsoft's QDK resource estimator) and IBM's bicycle architecture
 two-gross code, IBM's bicycle compiler).
 
 Tools:
-- build_circuit: run Qiskit code that builds the problem's circuit (with measurements) and \
-assigns it to `circuit`. Returns a circuit_id. If it fails, read the error, fix the code, retry.
+- build_benchmark: build a standard benchmark circuit (qft, qpe, tfim, adder, grover) of size n. \
+Whenever the task names one of these families (QFT, phase estimation, transverse-field Ising \
+model, ripple-carry adder, Grover search), use build_benchmark instead of writing the circuit.
+- build_circuit: for anything else, run Qiskit code that builds the problem's circuit (with \
+measurements) and assigns it to `circuit`. No reset or initialize: qubits start in |0>. Returns a circuit_id. If it fails, read the error, fix the code, retry.
 - estimate_surface / estimate_bicycle: estimate a circuit_id. Returns a result_id and the \
 estimate: physical_qubits, runtime_ns, physical_qubit_seconds, error, passes (error within \
 budget) and more.
@@ -128,6 +131,7 @@ def run(
     runs_dir=RUNS_DIR,
 ):
     toolbox = toolbox or Toolbox()
+    toolbox.prompt = task
     trace_path = Path(runs_dir) / f"{run_id}.jsonl"
     trace_path.parent.mkdir(parents=True, exist_ok=True)
     totals = dict.fromkeys(
