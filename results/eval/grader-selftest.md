@@ -1,8 +1,8 @@
 # Grader self-test
 
-`evals/tasks.yaml` (sha256 21baff4fe394). Each task's reference answer, built with the real tools, must be graded correct; each corrupted answer must fail with the expected category. Regenerate with `.venv/Scripts/python scripts/run_eval.py --self-test`.
+`evals/tasks.yaml` (sha256 230e2860eddc). Each task's reference answer, built with the real tools, must be graded correct; each corrupted answer must fail with the expected category. Regenerate with `.venv/Scripts/python scripts/run_eval.py --self-test`.
 
-256/256 cases as expected (standard: 156, free-form: 61, ambiguous: 39).
+257/257 cases as expected (standard: 156, free-form: 62, ambiguous: 39).
 
 | task | type | variant | expected | got | ok |
 |---|---|---|---|---|---|
@@ -205,12 +205,13 @@
 | ff-ghz-rz-5 | free-form | wrong circuit | wrong circuit | wrong circuit | yes |
 | ff-ghz-rz-5 | free-form | wrong p | wrong assumptions | wrong assumptions | yes |
 | ff-ghz-rz-5 | free-form | wrong code | wrong assumptions | wrong assumptions | yes |
-| ff-ghz-rz-8 | free-form | reference | correct | correct | yes |
-| ff-ghz-rz-8 | free-form | made-up ratio | made-up numbers | made-up numbers | yes |
-| ff-ghz-rz-8 | free-form | runtime in ms | unit/format | unit/format | yes |
-| ff-ghz-rz-8 | free-form | wrong circuit | wrong circuit | wrong circuit | yes |
-| ff-ghz-rz-8 | free-form | wrong p | wrong assumptions | wrong assumptions | yes |
-| ff-ghz-rz-8 | free-form | wrong code | wrong assumptions | wrong assumptions | yes |
+| ff-draper-adder-4 | free-form | reference | correct | correct | yes |
+| ff-draper-adder-4 | free-form | budget fail unstated | missed budget fail | missed budget fail | yes |
+| ff-draper-adder-4 | free-form | made-up ratio | made-up numbers | made-up numbers | yes |
+| ff-draper-adder-4 | free-form | runtime in ms | unit/format | unit/format | yes |
+| ff-draper-adder-4 | free-form | wrong circuit | wrong circuit | wrong circuit | yes |
+| ff-draper-adder-4 | free-form | wrong p | wrong assumptions | wrong assumptions | yes |
+| ff-draper-adder-4 | free-form | wrong code | wrong assumptions | wrong assumptions | yes |
 | ff-heisenberg-4 | free-form | reference | correct | correct | yes |
 | ff-heisenberg-4 | free-form | made-up ratio | made-up numbers | made-up numbers | yes |
 | ff-heisenberg-4 | free-form | runtime in ms | unit/format | unit/format | yes |

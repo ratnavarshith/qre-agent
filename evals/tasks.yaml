@@ -195,13 +195,12 @@ tasks:
     params: {p: 1.0e-3, code: two-gross}
     state: true
     counts: 0.1
-  - id: ff-ghz-rz-8
+  - id: ff-draper-adder-4
     type: free-form
-    difficulty: medium
-    prompt: "An 8-qubit GHZ state followed by Rz(π/5) on each qubit, then measurement: estimate it at p = 1e-4 on the surface code and on the gross code."
+    difficulty: hard
+    prompt: "Estimate a 4-bit Draper adder (addition in the Fourier basis, no Toffolis) with a carry-out, at a physical error rate of 1e-4 on the surface code and on the gross code. Layout: a on qubits 0-3, b on qubits 4-7, and qubit 8 (starting in |0>) receives the carry, so qubits 4-8 hold a + b, least significant bit first."
     params: {p: 1.0e-4, code: gross}
-    state: true
-    counts: 0.1
+    semantic: {family: adder, n: 4, layout: [[0, 1, 2, 3], [4, 5, 6, 7], [4, 5, 6, 7, 8]]}
   - id: ff-heisenberg-4
     type: free-form
     difficulty: hard
