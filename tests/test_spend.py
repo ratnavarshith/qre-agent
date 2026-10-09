@@ -3,10 +3,10 @@ import json
 import pytest
 import yaml
 
-from qre_agent.spend import BudgetError, Guard, Reply, read_log
+from qre_agent.spend import BudgetError, Guard, Reply, cost, read_log
 
 KEY = "sk-test-0123456789abcdef"
-PRICES = {"cheap": {"input": 1.0, "cached_input": 0.1, "output": 2.0}}  # $ per 1M tokens
+PRICES = {"cheap": {"input": 1.0, "cache_read": 0.1, "output": 2.0}}  # $ per 1M tokens
 
 
 class FakeClient:
@@ -112,3 +112,20 @@ def test_default_budgets_file_is_consistent():
     budgets = yaml.safe_load(BUDGETS_PATH.read_text(encoding="utf-8"))
     assert budgets["caps"] == {"dev": 10, "eval": 25, "phase3": 12, "ci": 3, "demo": 5}
     assert sum(budgets["caps"].values()) == 55
+
+
+def test_cached_tokens_are_billed_at_the_input_price_without_a_cache_read_price():
+    assert cost({"input": 1.0, "output": 2.0}, 1000, 500, 200) == pytest.approx(2000 / 1e6)
+    assert cost({"input": 1.0, "cache_read": 0.1, "output": 2.0}, 1000, 500, 200) == pytest.approx(
+        1820 / 1e6
+    )
+
+
+def test_every_default_price_is_complete_and_cache_reads_are_not_dearer_than_input():
+    from qre_agent.spend import BUDGETS_PATH
+
+    prices = yaml.safe_load(BUDGETS_PATH.read_text(encoding="utf-8"))["prices"]
+    assert prices
+    for model, p in prices.items():
+        assert set(p) == {"input", "output", "cache_read"}, model
+        assert 0 < p["cache_read"] <= p["input"] < p["output"], model

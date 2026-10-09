@@ -38,7 +38,7 @@ def load_keys():
 
 
 def cost(price, input_tokens, output_tokens, cached_tokens=0):
-    cached_price = price.get("cached_input", price["input"])
+    cached_price = price.get("cache_read", price["input"])
     fresh = input_tokens - cached_tokens
     return (
         fresh * price["input"] + cached_tokens * cached_price + output_tokens * price["output"]
