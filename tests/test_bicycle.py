@@ -10,13 +10,15 @@ import pytest
 from circuits import pauli_evolution
 from qiskit import QuantumCircuit
 from qiskit.circuit.library import PauliEvolutionGate
-from qiskit.quantum_info import SparsePauliOp
+from qiskit.quantum_info import Operator, SparsePauliOp
+from qiskit.synthesis import adder_qft_d00
 from qiskit.transpiler.passes import LitinskiTransformation
 
 from qre_agent import estimate_bicycle, estimate_surface, load_assumptions
 from qre_agent.bicycle import CODE_ERRORS, instruction_error, physical_qubits
 from qre_agent.circuits import qft
 from qre_agent.pbc import iter_pbc
+from qre_agent.surface import prepare
 
 A = load_assumptions()
 UPSTREAM_SCRIPTS = Path(A.compiler_dir).parent.parent / "scripts"
@@ -197,6 +199,61 @@ def test_near_clifford_rotation_is_rejected(estimator):
     c.measure(0, 0)
     with pytest.raises(ValueError, match="Clifford"):
         estimator(c, A)
+
+
+def _two_qubit(gate, *params):
+    c = QuantumCircuit(2, 2)
+    getattr(c, gate)(*params, 0, 1)
+    c.measure([0, 1], [0, 1])
+    return c
+
+
+def _draper_adder():
+    c = adder_qft_d00(4, kind="half")
+    c.measure_all()
+    return c
+
+
+# Each transpiles to rotations at exact multiples of π/2 (ryy, rxx: rx(±π/2) basis changes;
+# cp(π): rz(±π/2)), which v3 treats as Cliffords. (rotations left after prepare)
+CLIFFORD_ANGLE_CIRCUITS = {
+    "ryy": (_two_qubit("ryy", 0.2), 1),
+    "rxx": (_two_qubit("rxx", 0.2), 1),
+    "cp(pi)": (_two_qubit("cp", math.pi), 0),
+    "draper adder": (_draper_adder(), None),
+}
+
+
+@pytest.mark.compiler
+@pytest.mark.parametrize("name", CLIFFORD_ANGLE_CIRCUITS)
+def test_clifford_angle_rotations_are_free_on_both_sides(name):
+    circuit, rotations = CLIFFORD_ANGLE_CIRCUITS[name]
+    s, b = estimate_surface(circuit, A), estimate_bicycle(circuit, A)
+    keys = ("t_count", "rotation_count", "measurements")
+    assert [s[k] for k in keys] == [b[k] for k in keys]
+    if rotations is not None:
+        assert s["rotation_count"] == rotations
+
+
+@pytest.mark.parametrize("gate", ["rx", "ry", "rz"])
+@pytest.mark.parametrize("k", [-3, -2, -1, 1, 2, 3, 5])  # 0 and ±4 are dropped as ~0
+def test_clifford_angles_become_clifford_gates(gate, k):
+    c = QuantumCircuit(1)
+    getattr(c, gate)(k * math.pi / 2 + 1e-14, 0)  # exact up to rounding
+    prepared, dropped = prepare(c, A)
+    assert not any(i.operation.name in ("rx", "ry", "rz") for i in prepared.data)
+    assert Operator(prepared).equiv(Operator(c))
+    if k in (-1, 1):  # not reduced mod 2π (which flips the sign), so the phase is exact too
+        assert Operator(prepared) == Operator(c)
+    assert dropped == 0.0
+
+
+@pytest.mark.parametrize("offset", [1e-11, 1e-7])
+def test_near_clifford_angles_still_raise(offset):
+    c = QuantumCircuit(1)
+    c.rx(math.pi / 2 + offset, 0)
+    with pytest.raises(ValueError, match="Clifford"):
+        prepare(c, A)
 
 
 @pytest.mark.compiler

@@ -4,6 +4,7 @@ import math
 from importlib.metadata import version
 
 from qiskit import qasm3, transpile
+from qiskit.circuit.library import get_standard_gate_name_mapping
 
 from qdk.qre import (
     PSSPC,
@@ -29,6 +30,18 @@ ZERO_ANGLE = 1e-9
 # LitinskiTransformation (bicycle path) treats rotations within ~2.4495e-6 of a multiple of π/2 as
 # Clifford (measured on qiskit 2.5.2) while v3 counts them, so such circuits are rejected.
 CLIFFORD_TOL = 2.45e-6
+# A rotation within CLIFFORD_EXACT of k·π/2 (k ≠ 0) is a Clifford: v3 doesn't count it as a
+# rotation. prepare() replaces it with Clifford gates, so neither architecture pays for it.
+# r(k·π/2) = exp(-i·k·π/4)·C, with C below by k mod 4, in circuit order (rx = H rz H,
+# ry = S rx Sdg).
+CLIFFORD_EXACT = 1e-12
+_RZ = {1: ["s"], 2: ["z"], 3: ["sdg"]}
+CLIFFORD_GATES = {
+    "rz": _RZ,
+    "rx": {k: ["h", *g, "h"] for k, g in _RZ.items()},
+    "ry": {k: ["sdg", "h", *g, "h", "s"] for k, g in _RZ.items()},
+}
+GATES = get_standard_gate_name_mapping()
 SYNTHESIS_SHARE = 1 / 3  # legacy convention: rotation synthesis gets a third of the budget
 
 
@@ -43,8 +56,9 @@ def _logical_counts(trace):
 
 
 def prepare(circuit, a):
-    """Transpile to the fixed basis, reduce rotation angles mod 2π (a global phase only) and drop
-    rotations too small to survive the QASM export. Both architectures estimate this circuit.
+    """Transpile to the fixed basis, reduce rotation angles mod 2π (a global phase only), drop
+    rotations too small to survive the QASM export and replace rotations at exact multiples of
+    π/2 with Clifford gates. Both architectures estimate this circuit.
     Returns it with the error bound of the dropped rotations: sum of |θ|/2 (operator norm)."""
     transpiled = transpile(
         circuit,
@@ -61,7 +75,13 @@ def prepare(circuit, a):
             if abs(theta) < ZERO_ANGLE:
                 dropped += abs(theta) / 2
                 continue
-            if ZERO_ANGLE <= abs(math.remainder(theta, math.pi / 2)) < CLIFFORD_TOL:
+            k = round(theta / (math.pi / 2))
+            if abs(theta - k * math.pi / 2) < CLIFFORD_EXACT:
+                for name in CLIFFORD_GATES[op.name][k % 4]:
+                    prepared.append(GATES[name], inst.qubits)
+                prepared.global_phase -= k * math.pi / 4
+                continue
+            if abs(math.remainder(theta, math.pi / 2)) < CLIFFORD_TOL:
                 raise ValueError(
                     f"{op.name}({theta}) is within {CLIFFORD_TOL} of a Clifford angle; "
                     "LitinskiTransformation would drop it on the bicycle path"
