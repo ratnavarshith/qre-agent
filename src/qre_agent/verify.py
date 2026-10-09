@@ -15,10 +15,13 @@ MAX_PHYSICAL_QUBITS = 10**9
 MAX_RUNTIME_NS = 10 * 365.25 * 24 * 3600 / NS  # ten years
 REPORTED = ("physical_qubits", "runtime_ns", "physical_qubit_seconds")
 # 1,346.7  19.5  4.64e-04  1.2 × 10^-3  10^-3; not inside words (r1, c2) or after a decimal point.
+# A time unit right after the number (1.93 ms, 1.93ms) is captured as `u`.
 NUMBER = re.compile(
     r"(?<![\w.])(?P<m>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
     r"(?:[eE](?P<e>[+-]?\d+)|\s*[×x]\s*10\^(?P<x>[+-]?\d+)|\^(?P<p>[+-]?\d+))?"
+    r"(?:\s?(?P<u>ms|[µμ]s|us|s)(?!\w))?"
 )
+UNIT_SHIFT = {"ms": -6, "µs": -3, "μs": -3, "us": -3, "s": -9}  # power of ten from ns to the unit
 
 
 def same_circuit(surface, bicycle):
@@ -118,9 +121,17 @@ def numbers_in(text):
 
 
 def numbers_match(text, outputs):
-    """Every number written in the prose equals some tool output at the precision written."""
+    """Every number written in the prose equals some tool output at the precision written. A
+    number with a time unit right after it (ms, µs, s) must equal a tool value, which is in ns,
+    converted to that unit, and never the raw value: "1.93 ms" matches 1,934,400 ns and
+    "1,934,400 ms" doesn't. Without a unit the raw value is compared."""
     known = set(_leaves(outputs))
-    unmatched = [w for w, n in numbers_in(text) if not any(_close(n, t) for t in known)]
+
+    def matches(m):
+        shift = UNIT_SHIFT.get(m["u"], 0)
+        return any(_close(_written(m), t.scaleb(shift)) for t in known)
+
+    unmatched = [m[0] for m in NUMBER.finditer(text.replace("−", "-")) if not matches(m)]
     return f"numbers not in any tool output: {unmatched}" if unmatched else None
 
 

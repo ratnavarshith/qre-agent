@@ -106,6 +106,37 @@ def test_numbers_match_fails_on_a_number_no_tool_produced(made_up):
     assert made_up.split()[0].rstrip("x") in reason
 
 
+# SURFACE runs 1,934,400 ns and BICYCLE 75,294,213 ns
+@pytest.mark.parametrize(
+    "written",
+    ["1.9344 ms", "1.9344ms", "1.93 ms", "1,934.4 µs", "1,934.4 μs", "1934.4 us", "0.0019344 s",
+     "75.294213 ms", "0.075294213 s", "1.9344 ms."],
+)  # fmt: skip
+def test_numbers_match_accepts_a_runtime_converted_to_the_unit_written(written):
+    assert numbers_match(f"Surface runs {written}", [SURFACE, BICYCLE]) is None
+
+
+@pytest.mark.parametrize(
+    "written",
+    ["1.9344 s", "1.9344 µs", "1.94 ms", "1.9344", "1.9344 msec", "1.9344 steps", "1.9344, ms",
+     "1.9344 and 2 ms", "1.9344 seconds", "19.344 ms", "1,934,400 ms", "1934400 s", "1934400 µs"],
+)  # fmt: skip
+def test_numbers_match_rejects_a_missing_or_wrong_unit(written):
+    assert numbers_match(f"Surface runs {written}", [SURFACE, BICYCLE])
+
+
+def test_the_unit_conversion_stays_in_the_prose_layer():
+    text = answer(
+        "Surface needs 140,015 qubits.", ("r1", "surface", "140015", "1.9344", "271"), B_EST
+    )
+    result = verify(SURFACE, BICYCLE, text)
+    assert [f["check"] for f in result["failures"]] == ["fields_match"]
+    assert "runtime_ns reported 1.9344" in result["failures"][0]["reason"]
+    assert verify(
+        SURFACE, BICYCLE, answer("Surface runs 1.9344 ms, two-gross 75.294213 ms.", S_EST, B_EST)
+    )["passed"]
+
+
 def test_numbers_match_ignores_digits_inside_ids():
     assert numbers_match("Results r1 and r2 for circuit c1.", [SURFACE]) is None
 
