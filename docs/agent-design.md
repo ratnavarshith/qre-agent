@@ -160,6 +160,11 @@ The stated-assumption checks are regexes. An error rate counts as stated only ri
 
 **Output.** `results/eval/<model>/<date>[-name]/`: `config.yaml`, `meta.json` (versions, hardware, task-file hash), `runs.jsonl` (one graded line per run: correct, verify first try and after retry, category and reasons, tool errors, steps, tokens, our cost and OpenRouter's, wall latency) and `summary.md`. The summary gives rates as mean ± sample standard deviation (min–max) across repeats, per type and difficulty, plus cost, tokens, latency, failure counts by category and per-task results. Repeat i uses seed `seed + i`, which OpenRouter passes to providers that support it. `--summarize DIR` rewrites the summary from `runs.jsonl`. `--estimate` prints the worst case (every run uses every step at the guard's worst case) and an expected cost (the mean cost of earlier runs of that model in `runs/`), without calling the API. Spend goes to phase `eval`.
 
+**Limitations.**
+- The grader checks numbers, not labels: "14 physical qubits" for the circuit's 14 logical qubits passes, because 14 appears in a tool output.
+- Stated assumptions are found by regex. A phrasing outside the patterns counts as unstated (a false failure); it is never counted as stated by mistake, but the tests only cover the phrasings seen so far.
+- Free-form circuits are checked at small n against a reference (semantics, output state, or T and rotation counts within 10%); a circuit that passes can still differ from the reference in ways those checks don't see.
+
 ## Still to build
 
 - An Anthropic client (OpenRouter is done).
