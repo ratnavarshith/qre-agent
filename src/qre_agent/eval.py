@@ -316,6 +316,7 @@ def record(task, toolbox, run, grading, model, seed, repeat, wall_s):
         "steps": run.steps,
         "input_tokens": t.get("input_tokens", 0),
         "cached_tokens": t.get("cached_tokens", 0),
+        "cache_write_tokens": t.get("cache_write_tokens", 0),
         "output_tokens": t.get("output_tokens", 0),
         "reasoning_tokens": t.get("reasoning_tokens", 0),
         "cost_usd": t.get("cost_usd", 0.0),
@@ -341,12 +342,15 @@ def worst_case(prompt, price, max_steps, max_tokens):
     messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
     base = len(json.dumps(messages)) + tools
     grow = OUT_CHARS * max_tokens + TOOL_CALLS * TOOL_CHARS
-    return sum(cost(price, base + k * grow, max_tokens) for k in range(max_steps))
+    return sum(
+        cost(price, base + k * grow, max_tokens, written_tokens=base + k * grow)
+        for k in range(max_steps)
+    )
 
 
-def past_costs(model, runs_dir=REPO_ROOT / "runs"):
-    """Cost of each earlier run of this model, from the final records of its traces."""
-    costs = []
+def past_runs(model, runs_dir=REPO_ROOT / "runs"):
+    """Steps and token totals of each earlier run of this model, from its traces' final records."""
+    runs = []
     for path in Path(runs_dir).glob("*.jsonl"):
         if path.name == "spend.jsonl":
             continue
@@ -355,8 +359,44 @@ def past_costs(model, runs_dir=REPO_ROOT / "runs"):
             continue
         meta, last = json.loads(lines[0]), json.loads(lines[-1])
         if meta.get("model") == model and last.get("type") == "final":
-            costs.append(last["totals"]["cost_usd"])
-    return costs
+            runs.append({"steps": last["steps"], **last["totals"]})
+    return runs
+
+
+def expected_cost(price, past, ratio=1.0, prefix=0):
+    """Mean cost of a run, from the token totals of earlier runs `past` of a profile model.
+    For another model, input tokens are scaled by `ratio` (its prompt tokens over the profile
+    model's: tokenizers differ) and output tokens are kept. `prefix` is the number of prompt
+    tokens (tools and system prompt) the model reads from its cache on every step; it is
+    capped at the whole prompt. With ratio 1 and no prefix the profile's own cached tokens
+    are used."""
+    costs = []
+    for t in past:
+        tokens = t["input_tokens"] * ratio
+        if ratio == 1 and not prefix:
+            cached = t["cached_tokens"]
+        else:
+            cached = min(prefix * t["steps"], tokens)
+        costs.append(cost(price, tokens, t["output_tokens"], cached))
+    return statistics.mean(costs)
+
+
+def stop_reason(records, expected_total, stop):
+    """Why the eval should stop and ask, or None: the cost so far is over `cost_factor` times
+    the expected cost of the whole eval, or, once `min_runs` runs are done, more than
+    `api_error_rate` of the runs are api errors."""
+    spent = sum(r["cost_usd"] for r in records)
+    if spent > stop["cost_factor"] * expected_total:
+        return (
+            f"cost ${spent:.4f} is over {stop['cost_factor']:g}x the expected "
+            f"${expected_total:.4f} after {len(records)} runs"
+        )
+    errors = sum(r["category"] == "api error" for r in records)
+    if len(records) >= stop["min_runs"] and errors / len(records) > stop["api_error_rate"]:
+        return (
+            f"{errors} of {len(records)} runs are api errors (limit {stop['api_error_rate']:.0%})"
+        )
+    return None
 
 
 # ---- grader self-test ----
@@ -588,6 +628,7 @@ def summarize(records, meta):
         f"| cost per run | ${_mean_sd([r['cost_usd'] for r in records], '{:.5f}')} |",
         f"| input tokens per run | {_mean_sd([r['input_tokens'] for r in records], '{:.0f}')} |",
         f"| cached tokens per run | {_mean_sd([r['cached_tokens'] for r in records], '{:.0f}')} |",
+        f"| cache-written tokens per run | {_mean_sd([r.get('cache_write_tokens', 0) for r in records], '{:.0f}')} |",
         f"| output tokens per run | {_mean_sd([r['output_tokens'] for r in records], '{:.0f}')} |",
         f"| latency per run (s) | {_mean_sd([r['latency_s'] for r in records], '{:.1f}')} |",
         f"| of which LLM (s) | {_mean_sd([r['llm_s'] for r in records], '{:.1f}')} |",

@@ -1,0 +1,24 @@
+# The full eval: all 40 tasks in evals/tasks.yaml, 3 runs each (seed + run index), on anthropic/claude-haiku-4.5.
+# Copied next to the results in results/eval/<model>/<date>/. Models are run in this order:
+# gemini-flash, deepseek-v3.2, haiku-4.5, sonnet-5.
+#   .venv/Scripts/python scripts/run_eval.py evals/eval-haiku-4.5.yaml --estimate   # cost, no API calls
+#   .venv/Scripts/python scripts/run_eval.py evals/eval-haiku-4.5.yaml
+model: anthropic/claude-haiku-4.5
+phase: eval
+tasks: evals/tasks.yaml
+runs: 3
+seed: 0  # sent to OpenRouter; providers may ignore it
+max_steps: 12
+max_tokens: 4096  # per LLM call
+# cache_control on the system prompt and the last tool. Haiku 4.5 caches only prompts of
+# 4096+ tokens; the tools + system prompt are 2361, so nothing is cached (measured: 0 on 2 calls).
+cache: true
+# Cost estimate (no API calls): mean tokens of earlier runs of the profile model, input scaled by
+# the ratio of first-call prompt tokens (system prompt + tool schemas + a short task), measured
+# 2026-10-09 with one 16-token call per model: gemini-2.5-flash 1377, deepseek-v3.2 1987,
+# haiku-4.5 2361, sonnet-5 2868. Re-measure if the system prompt or the tools change.
+prompt_tokens: 2361
+profile: {model: google/gemini-2.5-flash, prompt_tokens: 1377}
+# Stop and ask when the cost passes cost_factor x the expected cost of the whole eval, or when
+# more than api_error_rate of the runs are api errors (judged once min_runs runs are done).
+stop: {cost_factor: 2.0, api_error_rate: 0.1, min_runs: 10}

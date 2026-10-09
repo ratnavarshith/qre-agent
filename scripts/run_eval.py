@@ -11,7 +11,7 @@ summary.md. Traces go to runs/<run_id>.jsonl. Spend phase: the config's (eval).
 import argparse
 import json
 import shutil
-import statistics
+import sys
 import time
 from pathlib import Path
 
@@ -20,13 +20,15 @@ import yaml
 from qre_agent.agent import environment, run
 from qre_agent.eval import (
     TYPES,
+    expected_cost,
     grade,
     load_suite,
-    past_costs,
+    past_runs,
     read_trace,
     record,
     run_from_trace,
     self_test,
+    stop_reason,
     summarize,
     worst_case,
 )
@@ -45,23 +47,31 @@ def selected(cfg, suite):
 
 
 def estimate(cfg, tasks, guard):
+    """Prints the worst-case and expected cost; returns the expected cost of the whole eval.
+    Expected: mean cost of the earlier runs of the profile model (cfg["profile"]), with input
+    tokens scaled to this model's tokenizer by the ratio of the two models' prompt tokens, and
+    for a caching model its cached prefix read on every step."""
     price = guard.prices[cfg["model"]]
     n_runs = len(tasks) * cfg["runs"]
     worst = cfg["runs"] * sum(
         worst_case(t["prompt"], price, cfg["max_steps"], cfg["max_tokens"]) for t in tasks
     )
+    profile = cfg["profile"]
+    past = past_runs(profile["model"])
+    same = cfg["model"] == profile["model"]
+    ratio = 1 if same else cfg["prompt_tokens"] / profile["prompt_tokens"]
+    prefix = 0 if same else cfg.get("cached_prefix_tokens", 0)
+    per_run = expected_cost(price, past, ratio, prefix)
+    expected = per_run * n_runs
     print(f"{len(tasks)} tasks x {cfg['runs']} runs = {n_runs} runs on {cfg['model']}")
     print(f"worst case: ${worst:.4f} (every run uses all {cfg['max_steps']} steps, each call at "
           "the guard's worst case)")  # fmt: skip
-    costs = past_costs(cfg["model"])
-    if costs:
-        mean, high = statistics.mean(costs), max(costs)
-        print(f"expected: ${mean * n_runs:.4f} (mean ${mean:.5f} per run over {len(costs)} "
-              f"earlier runs of this model; ${high * n_runs:.4f} if every run cost as much as "
-              f"the dearest, ${high:.5f})")  # fmt: skip
-    else:
-        print("expected: no earlier runs of this model to go by")
+    print(f"expected: ${expected:.4f} (${per_run:.5f} per run: mean tokens of {len(past)} earlier "
+          f"{profile['model']} runs, input x{ratio:.2f} for this model's tokenizer"
+          + (f", {prefix} prompt tokens read from the cache on every step" if prefix else "")
+          + f"); the eval stops and asks above ${cfg['stop']['cost_factor'] * expected:.4f}")  # fmt: skip
     print(f"phase {cfg['phase']} has ${guard.remaining():.4f} left of ${guard.cap}")
+    return expected
 
 
 def out_dir(cfg):
@@ -73,7 +83,8 @@ def out_dir(cfg):
     return path
 
 
-def run_eval(config_path, cfg, tasks, suite, guard):
+def run_eval(config_path, cfg, tasks, suite, guard, expected):
+    """Returns the reason the eval stopped early, or None."""
     out = out_dir(cfg)
     shutil.copy(config_path, out / "config.yaml")
     env = environment(Toolbox().assumptions)
@@ -87,22 +98,22 @@ def run_eval(config_path, cfg, tasks, suite, guard):
     }
     (out / "meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    records = []
+    records, stopped = [], None
     with (out / "runs.jsonl").open("w", encoding="utf-8") as f:
         for repeat in range(cfg["runs"]):
             seed = cfg["seed"] + repeat
-            client = OpenRouter(SCHEMAS, seed=seed)
+            client = OpenRouter(SCHEMAS, seed=seed, cache=cfg.get("cache", False))
             for task in tasks:
                 run_id = f"eval-{stamp}-{task['id']}-r{repeat}"
                 toolbox = Toolbox()
                 start = time.perf_counter()
-                stop = False
                 try:
                     result = run(task["prompt"], client, guard, cfg["model"], run_id, toolbox,
                                  cfg["max_steps"], cfg["max_tokens"])  # fmt: skip
                 except Exception as e:  # noqa: BLE001 (recorded; a BudgetError ends the eval)
                     result = run_from_trace(run_id, REPO_ROOT / "runs" / f"{run_id}.jsonl")
-                    stop = isinstance(e, BudgetError)
+                    if isinstance(e, BudgetError):
+                        stopped = f"the budget guard refused a call: {e}"
                 wall = time.perf_counter() - start
                 _, last = read_trace(result.trace_path)
                 grading = grade(task, toolbox, result, suite, last)
@@ -112,13 +123,14 @@ def run_eval(config_path, cfg, tasks, suite, guard):
                 f.flush()
                 print(f"r{repeat} {task['id']}: {'correct' if rec['correct'] else rec['category']}, "
                       f"steps {rec['steps']}, ${rec['cost_usd']:.5f}, {wall:.0f} s")  # fmt: skip
-                if stop:
-                    print("budget guard refused a call; stopping")
+                stopped = stopped or stop_reason(records, expected, cfg["stop"])
+                if stopped:
                     break
-            if stop:
+            if stopped:
                 break
     (out / "summary.md").write_text(summarize(records, meta), encoding="utf-8")
     print(f"results: {out}")
+    return stopped
 
 
 def resummarize(path):
@@ -184,9 +196,10 @@ def main():
     suite = load_suite(REPO_ROOT / cfg["tasks"])
     tasks = selected(cfg, suite)
     guard = Guard(cfg["phase"])
-    estimate(cfg, tasks, guard)
-    if not args.estimate:
-        run_eval(args.config, cfg, tasks, suite, guard)
+    expected = estimate(cfg, tasks, guard)
+    if not args.estimate and (stopped := run_eval(args.config, cfg, tasks, suite, guard, expected)):
+        print(f"STOPPED: {stopped}", file=sys.stderr)
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":

@@ -139,3 +139,43 @@ def test_grader_self_test(task_id):
     """Reference answers pass and corrupted ones fail, with the right category."""
     rows = ev.self_test(TASKS[task_id], SUITE)
     assert all(r["ok"] for r in rows), [r for r in rows if not r["ok"]]
+
+
+PRICE = {"input": 1.0, "cache_read": 0.1, "cache_write": 1.25, "output": 2.0}
+PAST = [{"steps": 4, "input_tokens": 8000, "cached_tokens": 1000, "output_tokens": 500}] * 2
+
+
+def test_expected_cost_of_the_profile_model_uses_its_own_tokens():
+    # 7000 fresh * 1.0 + 1000 cached * 0.1 + 500 out * 2.0, per 1M
+    assert ev.expected_cost(PRICE, PAST) == pytest.approx(8100 / 1e6)
+
+
+def test_expected_cost_scales_input_by_the_tokenizer_ratio_and_caches_the_prefix():
+    # ratio 2: 16000 input; no cache: 16000 * 1.0 + 500 * 2.0
+    assert ev.expected_cost(PRICE, PAST, ratio=2.0) == pytest.approx(17000 / 1e6)
+    # prefix 3000 read on each of 4 steps: 12000 cached * 0.1 + 4000 fresh * 1.0 + 1000
+    assert ev.expected_cost(PRICE, PAST, ratio=2.0, prefix=3000) == pytest.approx(6200 / 1e6)
+    # the cache can't cover more than the whole prompt
+    assert ev.expected_cost(PRICE, PAST, ratio=2.0, prefix=9000) == pytest.approx(2600 / 1e6)
+
+
+STOP = {"cost_factor": 2.0, "api_error_rate": 0.1, "min_runs": 10}
+
+
+def rec(cost=0.01, category=None):
+    return {"cost_usd": cost, "category": category}
+
+
+def test_stop_when_cost_passes_twice_the_expected_total():
+    assert ev.stop_reason([rec()] * 10, 0.06, STOP) is None  # $0.10 of 2 x $0.06 = $0.12
+    assert "2x the expected" in ev.stop_reason([rec()] * 13, 0.06, STOP)
+
+
+def test_stop_when_more_than_a_tenth_of_runs_are_api_errors():
+    cheap = 0.0001
+    assert ev.stop_reason([rec(cheap, "api error")] * 3, 1.0, STOP) is None  # too few runs yet
+    ten = [rec(cheap, "api error")] + [rec(cheap)] * 9
+    assert ev.stop_reason(ten, 1.0, STOP) is None  # exactly 10%
+    assert "api errors" in ev.stop_reason(
+        [rec(cheap, "api error")] * 2 + [rec(cheap)] * 8, 1.0, STOP
+    )

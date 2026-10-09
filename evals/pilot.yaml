@@ -16,3 +16,6 @@ runs: 1
 seed: 0
 max_steps: 12
 max_tokens: 4096
+prompt_tokens: 1377
+profile: {model: google/gemini-2.5-flash, prompt_tokens: 1377}
+stop: {cost_factor: 2.0, api_error_rate: 0.1, min_runs: 10}
