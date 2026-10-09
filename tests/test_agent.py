@@ -100,7 +100,7 @@ def test_answer_is_verified_and_the_run_is_traced(guard, tmp_path):
     records = trace(result.trace_path)
     kinds = [r["type"] for r in records]
     assert kinds == ["meta", "message", "message", "llm_call", "tool_call", "llm_call",
-                     "tool_call", "tool_call", "llm_call", "final"]  # fmt: skip
+                     "tool_call", "tool_call", "llm_call", "auto_verify", "final"]  # fmt: skip
     meta, final = records[0], records[-1]
     assert meta["model"] == "fake" and meta["max_steps"] == 12 and "qiskit" in meta["versions"]
     assert records[1]["message"]["content"].startswith("You estimate")
@@ -187,3 +187,69 @@ def test_numbers_from_the_task_are_known_to_the_automatic_verify(guard, tmp_path
     result = run("Compare an 8-bit adder", client, guard, "fake", "t1", StubToolbox(),
                  runs_dir=tmp_path)  # fmt: skip
     assert result.verification == {"passed": True, "failures": []}
+
+
+WRONG = ANSWER.replace("140015", "14015")  # fields_match fails
+
+
+def auto_verifies(result):
+    return [r for r in trace(result.trace_path) if r["type"] == "auto_verify"]
+
+
+def test_a_verify_pass_on_the_first_try_is_recorded_and_not_retried(guard, tmp_path):
+    client = FakeClient(*ESTIMATE, reply(ANSWER))
+    result = go(client, guard, tmp_path)
+    assert (result.verify_passed_first_try, result.verify_passed_after_retry) == (True, False)
+    assert [(r["attempt"], r["verification"]["passed"]) for r in auto_verifies(result)] == [
+        (1, True)
+    ]
+    assert len(client.sent) == 3
+    final = trace(result.trace_path)[-1]
+    assert (final["verify_passed_first_try"], final["verify_passed_after_retry"]) == (True, False)
+
+
+def test_a_failed_verify_is_sent_back_once_and_a_revision_that_passes_is_recorded(guard, tmp_path):
+    client = FakeClient(*ESTIMATE, reply(WRONG), reply(ANSWER))
+    result = go(client, guard, tmp_path)
+    assert (result.stop_reason, result.steps) == ("answered", 4)
+    assert (result.verify_passed_first_try, result.verify_passed_after_retry) == (False, True)
+    assert result.verification == {"passed": True, "failures": []}
+    feedback = client.sent[3][-1]
+    assert feedback["role"] == "user" and "failed verification" in feedback["content"]
+    assert "fields_match" in feedback["content"]
+    assert [(r["attempt"], r["verification"]["passed"]) for r in auto_verifies(result)] == [
+        (1, False),
+        (2, True),
+    ]
+    final = trace(result.trace_path)[-1]
+    assert (final["verify_passed_first_try"], final["verify_passed_after_retry"]) == (False, True)
+
+
+def test_the_retry_happens_once(guard, tmp_path):
+    client = FakeClient(*ESTIMATE, reply(WRONG))
+    result = go(client, guard, tmp_path)
+    assert (result.stop_reason, result.steps) == ("answered", 4)
+    assert (result.verify_passed_first_try, result.verify_passed_after_retry) == (False, False)
+    assert not result.verification["passed"]
+    assert len(auto_verifies(result)) == 2 and len(client.sent) == 4
+
+
+def test_no_retry_when_the_step_limit_leaves_no_step(guard, tmp_path):
+    client = FakeClient(*ESTIMATE, reply(WRONG))
+    result = go(client, guard, tmp_path, max_steps=3)
+    assert (result.stop_reason, result.steps) == ("answered", 3)
+    assert (result.verify_passed_first_try, result.verify_passed_after_retry) == (False, False)
+    assert len(client.sent) == 3 and len(auto_verifies(result)) == 1
+
+
+def test_a_malformed_reply_between_the_attempts_does_not_use_up_the_retry(guard, tmp_path):
+    client = FakeClient(*ESTIMATE, reply(WRONG), reply("oops"), reply(ANSWER))
+    result = go(client, guard, tmp_path)
+    assert (result.stop_reason, result.steps) == ("answered", 5)
+    assert (result.verify_passed_first_try, result.verify_passed_after_retry) == (False, True)
+
+
+def test_without_an_answer_neither_flag_is_set(guard, tmp_path):
+    result = go(FakeClient(reply("no idea")), guard, tmp_path, max_steps=2)
+    assert (result.verify_passed_first_try, result.verify_passed_after_retry) == (False, False)
+    assert auto_verifies(result) == []

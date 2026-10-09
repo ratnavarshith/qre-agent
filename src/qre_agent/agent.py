@@ -19,6 +19,7 @@ from .verify import parse_answer
 RUNS_DIR = REPO_ROOT / "runs"
 MAX_STEPS = 12
 MAX_TOKENS = 4096
+VERIFY_RETRIES = 1  # times a failed automatic verify goes back to the agent
 FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
 
 SYSTEM = """\
@@ -83,6 +84,9 @@ class Run:
     steps: int  # LLM calls
     totals: dict  # tokens, cost and latency over the run
     trace_path: Path
+    # Scored separately: strict = first try; lenient = first try or after the retry.
+    verify_passed_first_try: bool = False
+    verify_passed_after_retry: bool = False  # the first verify failed and the revision passed
 
 
 def environment(a):
@@ -129,6 +133,7 @@ def run(
     max_steps=MAX_STEPS,
     max_tokens=MAX_TOKENS,
     runs_dir=RUNS_DIR,
+    verify_retries=VERIFY_RETRIES,
 ):
     toolbox = toolbox or Toolbox()
     toolbox.prompt = task
@@ -165,7 +170,7 @@ def run(
             log("message", message=m)
 
         answer = verification = None
-        stop_reason, steps = "step_limit", 0
+        stop_reason, steps, verifications = "step_limit", 0, []
         try:
             while steps < max_steps:
                 steps += 1
@@ -232,8 +237,28 @@ def run(
                 if reason is None:
                     answer = json.loads(text)
                     verification = toolbox.verify(surface_id, bicycle_id, text)
-                    stop_reason = "answered"
-                    break
+                    verifications.append(verification["passed"])
+                    log(
+                        "auto_verify",
+                        step=steps,
+                        attempt=len(verifications),
+                        verification=verification,
+                    )
+                    if verification["passed"] or len(verifications) > verify_retries:
+                        stop_reason = "answered"
+                        break
+                    if steps == max_steps:  # no step left to revise in
+                        stop_reason = "answered"
+                        break
+                    feedback = {
+                        "role": "user",
+                        "content": "Your final answer failed verification: "
+                        f"{json.dumps(verification['failures'])}. Fix it, calling tools if you "
+                        "need to, and reply with only the corrected JSON object.",
+                    }
+                    messages.append(feedback)
+                    log("message", step=steps, message=feedback)
+                    continue
                 feedback = {
                     "role": "user",
                     "content": f"Your final answer could not be checked: {reason}. Reply with only "
@@ -245,12 +270,18 @@ def run(
             stop_reason = f"error: {type(e).__name__}: {e}"
             raise
         finally:
+            first_try = verifications[:1] == [True]
+            after_retry = len(verifications) > 1 and not verifications[0] and verifications[-1]
             log(
                 "final",
                 stop_reason=stop_reason,
                 steps=steps,
                 answer=answer,
                 verification=verification,
+                verify_passed_first_try=first_try,
+                verify_passed_after_retry=after_retry,
                 totals=totals,
             )
-    return Run(run_id, stop_reason, answer, verification, steps, totals, trace_path)
+    return Run(
+        run_id, stop_reason, answer, verification, steps, totals, trace_path, first_try, after_retry
+    )

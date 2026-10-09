@@ -89,6 +89,15 @@ def check(task, toolbox, result):
     return {"correct": correct, "fields": out, "assumption_stated": stated}
 
 
+def verify_label(result):
+    v = result.verification
+    if result.verify_passed_first_try:
+        return "pass (first try)"
+    if result.verify_passed_after_retry:
+        return "pass (after retry)"
+    return f"FAIL {[f['check'] for f in v['failures']]}" if v else "-"
+
+
 def main(config_path, estimate_only):
     cfg = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
     guard = Guard(cfg["phase"])
@@ -123,16 +132,17 @@ def main(config_path, estimate_only):
             "stop_reason": result.stop_reason,
             "steps": result.steps,
             "verification": result.verification,
+            "verify_passed_first_try": result.verify_passed_first_try,
+            "verify_passed_after_retry": result.verify_passed_after_retry,
             "totals": result.totals,
             "answer": result.answer,
             **check(task, toolbox, result),
         }
         report["tasks"].append(row)
         t = result.totals
-        v = result.verification
         print(
             f"{task['id']}: {result.stop_reason}, correct={row['correct']}, "
-            f"verify={'pass' if v and v['passed'] else [f['check'] for f in v['failures']] if v else '-'}, "
+            f"verify={verify_label(result)}, "
             f"steps={result.steps}, tokens in/cached/out={t['input_tokens']}/{t['cached_tokens']}/"
             f"{t['output_tokens']}, cost ours ${t['cost_usd']:.5f} vs OpenRouter "
             f"${t['reported_cost_usd']:.5f}, LLM {t['llm_s']:.1f} s + tools {t['tool_s']:.1f} s"
