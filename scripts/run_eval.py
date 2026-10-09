@@ -4,6 +4,7 @@ summary.md. Traces go to runs/<run_id>.jsonl. Spend phase: the config's (eval).
 
   .venv/Scripts/python scripts/run_eval.py evals/pilot.yaml --estimate   # cost, no API calls
   .venv/Scripts/python scripts/run_eval.py evals/pilot.yaml
+  .venv/Scripts/python scripts/run_eval.py --rerun-errors results/eval/<model>/<date>  # api errors, once
   .venv/Scripts/python scripts/run_eval.py --summarize results/eval/<model>/<date>  # redo summary.md
   .venv/Scripts/python scripts/run_eval.py --self-test   # grader self-test, no API calls
 """
@@ -17,7 +18,7 @@ from pathlib import Path
 
 import yaml
 
-from qre_agent.agent import environment, run
+from qre_agent.agent import environment, git_state, run
 from qre_agent.eval import (
     TYPES,
     expected_cost,
@@ -26,6 +27,7 @@ from qre_agent.eval import (
     past_runs,
     read_trace,
     record,
+    replace_reruns,
     run_from_trace,
     self_test,
     stop_reason,
@@ -37,6 +39,7 @@ from qre_agent.spend import REPO_ROOT, BudgetError, Guard
 from qre_agent.tools import SCHEMAS, Toolbox
 
 EVAL_DIR = REPO_ROOT / "results" / "eval"
+RUNS_DIR = REPO_ROOT / "runs"  # traces
 
 
 def selected(cfg, suite):
@@ -83,6 +86,28 @@ def out_dir(cfg):
     return path
 
 
+def run_one(cfg, task, repeat, run_id, client, guard, suite, rerun_of=None):
+    """One graded run. Returns its runs.jsonl record and why the budget guard refused a call, if
+    it did."""
+    toolbox, refused = Toolbox(), None
+    start = time.perf_counter()
+    try:
+        result = run(task["prompt"], client, guard, cfg["model"], run_id, toolbox,
+                     cfg["max_steps"], cfg["max_tokens"], RUNS_DIR)  # fmt: skip
+    except Exception as e:  # noqa: BLE001 (recorded as an api error, or a budget stop)
+        result = run_from_trace(run_id, RUNS_DIR / f"{run_id}.jsonl")
+        if isinstance(e, BudgetError):
+            refused = f"the budget guard refused a call: {e}"
+    wall = time.perf_counter() - start
+    _, last = read_trace(result.trace_path)
+    grading = grade(task, toolbox, result, suite, last)
+    seed = cfg["seed"] + repeat
+    rec = record(task, toolbox, result, grading, cfg["model"], seed, repeat, wall, rerun_of)
+    print(f"r{repeat} {task['id']}: {'correct' if rec['correct'] else rec['category']}, "
+          f"steps {rec['steps']}, ${rec['cost_usd']:.5f}, {wall:.0f} s")  # fmt: skip
+    return rec, refused
+
+
 def run_eval(config_path, cfg, tasks, suite, guard, expected):
     """Returns the reason the eval stopped early, or None."""
     out = out_dir(cfg)
@@ -103,28 +128,13 @@ def run_eval(config_path, cfg, tasks, suite, guard, expected):
     records, stopped = [], None
     with (out / "runs.jsonl").open("w", encoding="utf-8") as f:
         for repeat in range(cfg["runs"]):
-            seed = cfg["seed"] + repeat
-            client = OpenRouter(SCHEMAS, seed=seed, cache=cfg.get("cache", False))
+            client = OpenRouter(SCHEMAS, seed=cfg["seed"] + repeat, cache=cfg.get("cache", False))
             for task in tasks:
                 run_id = f"eval-{stamp}-{task['id']}-r{repeat}"
-                toolbox = Toolbox()
-                start = time.perf_counter()
-                try:
-                    result = run(task["prompt"], client, guard, cfg["model"], run_id, toolbox,
-                                 cfg["max_steps"], cfg["max_tokens"])  # fmt: skip
-                except Exception as e:  # noqa: BLE001 (recorded; a BudgetError ends the eval)
-                    result = run_from_trace(run_id, REPO_ROOT / "runs" / f"{run_id}.jsonl")
-                    if isinstance(e, BudgetError):
-                        stopped = f"the budget guard refused a call: {e}"
-                wall = time.perf_counter() - start
-                _, last = read_trace(result.trace_path)
-                grading = grade(task, toolbox, result, suite, last)
-                rec = record(task, toolbox, result, grading, cfg["model"], seed, repeat, wall)
+                rec, stopped = run_one(cfg, task, repeat, run_id, client, guard, suite)
                 records.append(rec)
                 f.write(json.dumps(rec) + "\n")
                 f.flush()
-                print(f"r{repeat} {task['id']}: {'correct' if rec['correct'] else rec['category']}, "
-                      f"steps {rec['steps']}, ${rec['cost_usd']:.5f}, {wall:.0f} s")  # fmt: skip
                 stopped = stopped or stop_reason(records, expected, cfg["stop"])
                 if stopped:
                     break
@@ -132,6 +142,43 @@ def run_eval(config_path, cfg, tasks, suite, guard, expected):
                 break
     (out / "summary.md").write_text(summarize(records, meta), encoding="utf-8")
     print(f"results: {out}")
+    return stopped
+
+
+def rerun_errors(path, guard):
+    """Reruns once each run of the eval in `path` that was an api error (same task, repeat and
+    seed), replaces it in runs.jsonl and rewrites summary.md. The first attempts stay in
+    runs-first-attempt.jsonl. Returns the reason it stopped early, or None."""
+    path = Path(path)
+    cfg = yaml.safe_load((path / "config.yaml").read_text(encoding="utf-8"))
+    meta = json.loads((path / "meta.json").read_text(encoding="utf-8"))
+    suite = load_suite(REPO_ROOT / cfg["tasks"])
+    if suite["sha256"] != meta["tasks_sha256"]:
+        raise SystemExit("the task file changed since this eval ran; not rerunning")
+    lines = (path / "runs.jsonl").read_text(encoding="utf-8").splitlines()
+    records = [json.loads(line) for line in lines]
+    first = path / "runs-first-attempt.jsonl"
+    if not first.exists():
+        first.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    tasks = {t["id"]: t for t in suite["tasks"]}
+    todo = [r for r in records if r["category"] == "api error" and "rerun_of" not in r]
+    print(f"{len(todo)} api-error runs of {len(records)} to rerun once")
+    stamp, reruns, stopped = time.strftime("%Y%m%d-%H%M%S"), [], None
+    for old in todo:
+        client = OpenRouter(SCHEMAS, seed=old["seed"], cache=cfg.get("cache", False))
+        run_id = f"eval-{stamp}-{old['task']}-r{old['repeat']}-rerun"
+        rec, stopped = run_one(cfg, tasks[old["task"]], old["repeat"], run_id, client, guard,
+                               suite, old)  # fmt: skip
+        reruns.append(rec)
+        if stopped:
+            break
+    records = replace_reruns(records, reruns)
+    meta["reruns"] = {"date": time.strftime("%Y-%m-%d %H:%M:%S %z"), "git": git_state(),
+                      "runs": len(reruns)}  # fmt: skip
+    (path / "runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records), "utf-8")
+    (path / "meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
+    (path / "summary.md").write_text(summarize(records, meta), encoding="utf-8")
+    print(f"rewrote {path / 'runs.jsonl'} and summary.md")
     return stopped
 
 
@@ -187,11 +234,17 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("config", nargs="?")
     parser.add_argument("--estimate", action="store_true", help="print the cost and stop")
+    parser.add_argument("--rerun-errors", metavar="DIR", help="rerun DIR's api-error runs once")
     parser.add_argument("--summarize", metavar="DIR", help="rewrite DIR/summary.md")
     parser.add_argument("--self-test", action="store_true", help="test the grader, no API calls")
     args = parser.parse_args()
     if args.summarize:
         return resummarize(args.summarize)
+    if args.rerun_errors:
+        if stopped := rerun_errors(args.rerun_errors, Guard("eval")):
+            print(f"STOPPED: {stopped}", file=sys.stderr)
+            raise SystemExit(2)
+        return
     if args.self_test:
         raise SystemExit(0 if run_self_test(REPO_ROOT / "evals" / "tasks.yaml") else 1)
     cfg = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))

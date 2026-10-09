@@ -295,8 +295,8 @@ def run_from_trace(run_id, path):
     )
 
 
-def record(task, toolbox, run, grading, model, seed, repeat, wall_s):
-    """One line of runs.jsonl."""
+def record(task, toolbox, run, grading, model, seed, repeat, wall_s, rerun_of=None):
+    """One line of runs.jsonl. `rerun_of` is the earlier api-error record this run replaces."""
     t = run.totals
     return {
         "task": task["id"],
@@ -324,7 +324,20 @@ def record(task, toolbox, run, grading, model, seed, repeat, wall_s):
         "latency_s": wall_s,
         "llm_s": t.get("llm_s", 0.0),
         "tool_s": t.get("tool_s", 0.0),
-    }
+    } | ({"rerun_of": {k: rerun_of[k] for k in ("run_id", "stop_reason")}} if rerun_of else {})
+
+
+def api_error_counts(records):
+    """(runs that were api errors on the first attempt, runs that still are): a rerun record
+    carries `rerun_of`, the first attempt it replaced."""
+    first = sum(r["category"] == "api error" or "rerun_of" in r for r in records)
+    return first, sum(r["category"] == "api error" for r in records)
+
+
+def replace_reruns(records, reruns):
+    """The records, with each run replaced by its rerun (same task and repeat), in order."""
+    by_run = {(r["task"], r["repeat"]): r for r in reruns}
+    return [by_run.get((r["task"], r["repeat"]), r) for r in records]
 
 
 # ---- cost estimates ----
@@ -575,6 +588,7 @@ def summarize(records, meta):
     """summary.md: correct and verify rates with their spread across repeats, per type and
     difficulty; cost, tokens, steps and latency; failure counts by category; per-task results."""
     repeats = sorted({r["repeat"] for r in records})
+    first, left = api_error_counts(records)
     graded = [r for r in records if r["category"] != "api error"]
     lines = [
         f"# Eval: {meta['model']}, {meta['date']}",
@@ -593,6 +607,11 @@ def summarize(records, meta):
             "being one pass over the tasks. Correct = the task's checks and verify both pass. "
             "Verify (any) = passed on the first try or after the one retry. Runs that hit an API "
             f"error are left out of the rates ({len(records) - len(graded)} here)."
+        ),
+        "",
+        (
+            f"API errors (no retries): {first} of {len(records)} runs on the first attempt, "
+            f"{left} after rerunning them once."
         ),
         "",
         "| group | tasks | correct | verify first try | verify (any) | steps | tool errors |",

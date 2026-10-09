@@ -179,3 +179,31 @@ def test_stop_when_more_than_a_tenth_of_runs_are_api_errors():
     assert "api errors" in ev.stop_reason(
         [rec(cheap, "api error")] * 2 + [rec(cheap)] * 8, 1.0, STOP
     )
+
+
+def test_api_errors_are_counted_on_the_first_attempt_and_after_the_rerun():
+    first = [rec(0.0, "api error") | {"task": "a", "repeat": 0}, rec() | {"task": "b", "repeat": 0}]
+    first += [rec(0.0, "api error") | {"task": "c", "repeat": 0}]
+    assert ev.api_error_counts(first) == (2, 2)
+    rerun_a = rec() | {"task": "a", "repeat": 0, "rerun_of": {"run_id": "x"}}
+    rerun_c = rec(0.0, "api error") | {"task": "c", "repeat": 0, "rerun_of": {"run_id": "y"}}
+    merged = ev.replace_reruns(first, [rerun_a, rerun_c])
+    assert [r["task"] for r in merged] == ["a", "b", "c"]  # same order
+    assert merged[0] is rerun_a and merged[2] is rerun_c and merged[1] is first[1]
+    assert ev.api_error_counts(merged) == (2, 1)
+
+
+def test_summary_reports_the_api_error_baseline():
+    meta = {"model": "m", "date": "d", "config": {"seed": 0}, "tasks": "evals/tasks.yaml",
+            "tasks_sha256": "0" * 64, "versions": {"qdk": "1"},
+            "hardware": {"processor": "cpu", "platform": "os", "python": "3.11"}}  # fmt: skip
+    rs = records([[1, 1, 1, 1]])
+    err = {
+        "category": "api error",
+        "correct": False,
+        "failures": [{"category": "api error", "reason": "502"}],
+    }
+    rs[0] = rs[0] | {"rerun_of": {"run_id": "x"}}  # rerun succeeded
+    rs[1] = rs[1] | err
+    text = ev.summarize(rs, meta)
+    assert "API errors (no retries): 2 of 4 runs on the first attempt, 1 after rerunning" in text
