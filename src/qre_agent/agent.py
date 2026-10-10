@@ -14,6 +14,7 @@ from pathlib import Path
 
 from opentelemetry import context, trace
 
+from . import guardrail as guard_rules
 from . import tracing
 from .compiler import compiler_versions, measurement_table_hashes
 from .spend import REPO_ROOT, cost
@@ -213,11 +214,14 @@ def run(
     otel=True,
     switch_on_first_build=False,
     routing=None,
+    guardrail=False,
 ):
     """`otel`: also write the OpenTelemetry trace to <runs_dir>/otel/<run_id>.jsonl.
     `switch_on_first_build`: stop, with stop_reason SWITCHED, when the run's first tool call is
     build_circuit, before running it (cost routing, routing.py). `routing`: a dict that goes into
-    the meta record and onto the root span as routing.<key> attributes."""
+    the meta record and onto the root span as routing.<key> attributes. `guardrail`: wrap tool
+    outputs in data delimiters, add the system-prompt rule and strip instruction-like lines from
+    string values (guardrail.py); the trace keeps the raw outputs and lists the stripped lines."""
     toolbox = toolbox or Toolbox()
     toolbox.prompt = task
     trace_path = Path(runs_dir) / f"{run_id}.jsonl"
@@ -258,12 +262,17 @@ def run(
             max_tokens=max_tokens,
             seed=getattr(client, "seed", None),
             tools=[s["name"] for s in SCHEMAS],
+            guardrail=guardrail,
             assumptions=toolbox.assumptions.as_dict(),
             **({"routing": routing} if routing else {}),
             **environment(toolbox.assumptions),
         )
         messages = [
-            {"role": "system", "content": system_prompt(toolbox.assumptions)},
+            {
+                "role": "system",
+                "content": system_prompt(toolbox.assumptions)
+                + (guard_rules.RULE.format(mark=guard_rules.MARK) if guardrail else ""),
+            },
             {"role": "user", "content": task},
         ]
         for m in messages:
@@ -348,7 +357,8 @@ def run(
                         tool_s = time.perf_counter() - start
                         span.set_attributes(tool_attributes(result, tool_s, toolbox.cache_hit))
                     totals["tool_s"] += tool_s
-                    messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
+                    shown, flagged = guard_rules.wrap(name, result) if guardrail else (result, [])
+                    messages.append({"role": "tool", "tool_call_id": call["id"], "content": shown})
                     log(
                         "tool_call",
                         step=steps,
@@ -358,6 +368,7 @@ def run(
                         result=json.loads(result),
                         latency_s=tool_s,
                         **({} if toolbox.cache_hit is None else {"cache_hit": toolbox.cache_hit}),
+                        **({"flagged": flagged} if guardrail else {}),
                     )
                 if calls:
                     continue
