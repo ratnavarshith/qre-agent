@@ -101,7 +101,8 @@ def test_sandbox_blocks_files_outside_its_run_dir(call):
         ("os.system('echo hi')", "os.system"),
         ("os.popen('echo hi').read()", "subprocess.Popen"),
         ("os.execv(os.sys.executable, ['python'])", "os.exec"),
-        ("os.spawnl(os.P_WAIT, os.sys.executable, 'python')", "os.spawn"),
+        # POSIX spawn forks first, so Linux raises os.fork; Windows raises os.spawn
+        ("os.spawnl(os.P_WAIT, os.sys.executable, 'python')", "os.(spawn|fork)"),
     ],
 )
 def test_sandbox_blocks_processes(call, event):
