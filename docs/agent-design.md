@@ -1,6 +1,6 @@
 # Agent design: tools and verifier
 
-Phase 2. Step 1 built the tools and the verifier; step 2 added the agent loop and an OpenRouter client.
+Phase 2. Step 1 built the tools and the verifier; step 2 added the agent loop and an OpenRouter client. Phase 3, step 1 added tracing, a reliability layer and fault injection (see Reliability).
 
 ## Shape
 
@@ -21,6 +21,8 @@ The agent turns a plain-English problem into a circuit, estimates it on both arc
 | `verify` | `surface_result`, `bicycle_result` (result ids), `final_answer` (JSON string, below), optional `sweep` of `{size, surface, bicycle}` | `{"passed": bool, "failures": [{"check", "reason"}]}` |
 
 Every `enum` in the schemas is a string enum. Gemini's function-calling schema allows `enum` on STRING only. In the first trial, the numeric enum on bicycle's `physical_error_rate` went with Gemini calling `estimate_bicycle` with `{}` in all three tasks. So the tool takes `"1e-3"` or `"1e-4"` and converts it; a number is accepted too.
+
+**Timeouts and repeats.** `estimate_surface` and `estimate_bicycle` run in a spawned child process that is killed after `Toolbox.timeout` (180 s by default, `tools.TOOL_TIMEOUT_S`); the call then returns `{"error": "ToolTimeout: ..."}` and stores nothing. Not a thread: a thread can't be killed, and QDK keeps one interpreter context per process that panics when used from a second thread (`GlobalCallable is unsendable, but is being dropped on another thread`, hit by a first version that timed tools out with threads). A child costs about 1.7 s to start (importing qiskit and QDK), on top of the 0.3 s median estimate. `build_circuit` already runs in a child with its own 60 s limit. `build_benchmark` and `verify` run in-process with no limit: they are pure Python on small inputs. `Toolbox(timeout=None)` runs the estimates in-process; the grader's self-test uses that. Tools are safe to repeat (the agent may call one again after a timeout): the same call returns the same output under a new id, earlier ids and results are left alone, and a failed `verify`'s output adds no number that a later `verify` would accept (`tests/test_tools.py`).
 
 `build_circuit` rejects circuits that contain `reset` or `initialize` (which adds resets), searching inside composite instructions, because the bicycle compiler can't compile resets. Its description says so, and that qubits start in |0>.
 
@@ -165,7 +167,7 @@ The stated-assumption checks are regexes. An error rate counts as stated only ri
 
 **Models and caching.** `evals/eval-<model>.yaml` runs the 40 tasks × 3 on one model; the four are run in the order gemini-2.5-flash, deepseek-v3.2, claude-haiku-4.5, claude-sonnet-5. With `cache: true`, `llm.OpenRouter` puts `cache_control` on the system prompt and the last tool definition of calls to `anthropic/` models (Anthropic's cache prefix is tools, then system, then messages, so this caches both). Gemini and DeepSeek cache implicitly. Measured on one prompt (tools + system prompt + a short task): Sonnet 5 wrote 2,780 tokens on the first call and read all 2,780 on the second; Haiku 4.5 cached nothing, because its minimum cacheable prompt is 4,096 tokens and ours is 2,361. Cache writes cost 1.25× the input price (OpenRouter billing), so `budgets.yaml` has a `cache_write` price, `cost()` bills written tokens at it, and the guard's worst case prices the whole prompt as a write.
 
-**API errors.** The client doesn't retry, so a provider failure ends the run with no answer and is graded `api error`. `run_eval.py --rerun-errors DIR` reruns each of DIR's api-error runs once (same task, repeat and seed), replaces it in `runs.jsonl` (the record gets `rerun_of`, the first attempt's run id and stop reason), keeps the original file as `runs-first-attempt.jsonl`, and rewrites `summary.md`, which says how many runs were api errors on the first attempt and how many after the rerun. The first-attempt count is the no-retry baseline for Phase 3, which adds retries. `--rerun DIR --runs TASK:REPEAT ... --reason TEXT` reruns named runs the same way, for a harness bug fixed after the eval ran: the reason goes into `rerun_of` and into the list of rerun events in `meta.json`, and such reruns don't count as api errors.
+**API errors.** The eval runs without the reliability layer (below), so a provider failure ends the run with no answer and is graded `api error`. `run_eval.py --rerun-errors DIR` reruns each of DIR's api-error runs once (same task, repeat and seed), replaces it in `runs.jsonl` (the record gets `rerun_of`, the first attempt's run id and stop reason), keeps the original file as `runs-first-attempt.jsonl`, and rewrites `summary.md`, which says how many runs were api errors on the first attempt and how many after the rerun. The first-attempt count is the no-retry baseline for Phase 3, which adds retries. `--rerun DIR --runs TASK:REPEAT ... --reason TEXT` reruns named runs the same way, for a harness bug fixed after the eval ran: the reason goes into `rerun_of` and into the list of rerun events in `meta.json`, and such reruns don't count as api errors.
 
 **Rate limits.** OpenRouter limits new accounts to 20 requests a minute per Anthropic model; an unpaced Haiku eval got HTTP 429 on 4 of its first 10 runs and stopped (kept as `2026-10-09-aborted-429`). `max_rpm` in a config makes `llm.Pacer` keep calls at least 60 / max_rpm seconds apart, shared by all runs of the eval. It is not a retry: a failed call still fails. The wait is recorded per run as `paced_wait_s` and subtracted from `latency_s` and `llm_s`, so latencies are comparable with unpaced models (the per-call latencies in the traces still include it).
 
@@ -176,9 +178,38 @@ The stated-assumption checks are regexes. An error rate counts as stated only ri
 - Stated assumptions are found by regex. A phrasing outside the patterns counts as unstated (a false failure); it is never counted as stated by mistake, but the tests only cover the phrasings seen so far.
 - Free-form circuits are checked at small n against a reference (semantics, output state, or T and rotation counts within 10%); a circuit that passes can still differ from the reference in ways those checks don't see.
 
+## Reliability
+
+Phase 3, step 1. Code: `src/qre_agent/tracing.py`, `reliability.py`, `claude.py`, `faults.py`; experiment runner `scripts/run_faults.py`.
+
+**Tracing.** Each `agent.run` also writes an OpenTelemetry trace to `runs/otel/<run_id>.jsonl`, one span per line in the SDK's JSON, from a local exporter (no collector, no hosted service). One trace per run: an `agent_run` root span (run id, model, phase; at the end stop reason, steps, whether verify passed, cost), an `llm_call` span per LLM call and a `tool_call` span per tool call.
+- LLM spans: `gen_ai.request.model`, `gen_ai.response.model` (the fallback's, after a fallback), `gen_ai.usage.input_tokens` / `cached_tokens` / `output_tokens`, `cost_usd`, `latency_s`, `retries`, `fallback`, `faults`, and `error.type` when the call raised (a ProviderError's kind, else the exception's name). Each failed attempt is an `llm_retry` event, each injected fault a `fault_injected` event.
+- Tool spans: `tool.name`, `tool.call_id`, `latency_s`, and `error.type` (the exception name in the tool's `{"error": ...}`, or `JSONDecodeError` for arguments that aren't JSON). Tools have no retries.
+
+Each run has its own tracer provider, not the global one. `runs/<run_id>.jsonl` keeps its records; `llm_call` records gain `model`, `retries`, `fallback` and `faults`. `run(..., otel=False)` turns the OpenTelemetry trace off.
+
+**Errors.** Both clients raise `llm.ProviderError` with a `kind`: `timeout`, `rate_limit` (429), `server` (5xx, Anthropic's 529 included) and `missing_usage` (a reply with no usage) are retried; `client` (other 4xx) and `connection` (unreachable) are not. `retry_after` is the provider's Retry-After in seconds (a number or an HTTP date). An OpenRouter error body (HTTP 200 with `error`) takes its kind from its `code`, and is `server` without one. Every LLM call has a 180 s timeout: urllib's per-socket-operation timeout for OpenRouter, so a slowly trickling reply can take longer (one eval call took 301 s); the SDK's request timeout for Anthropic.
+
+**Retries and fallback** (`reliability.Reliable`, switched by a config's `reliability: {enabled: true, ...}` through `reliability.build`). It has the guard's interface, so the agent loop is unchanged.
+- A retryable failure is retried up to 3 times. Before retry k (0, 1, 2) it sleeps the longer of a full-jitter backoff, uniform in [0, min(30 s, 1 s · 2^k)] from a seeded RNG, and the provider's Retry-After, which is always waited in full.
+- When the retries are used up, the same messages go to the fallback with the same rule: Anthropic's Messages API (official SDK, its own retries off), `claude-haiku-4-5`, `ANTHROPIC_API_KEY`, spend phase `phase3`. The next call starts on the primary again. Other errors are raised at once, with no fallback.
+- Every attempt goes through a `spend.Guard`, so each one is budget-checked and a failed one is logged at its worst case, as before. The run's cost is priced at the model that answered.
+- The reply carries `model`, `retries` (attempts sent again to the same provider), `fallback` and `faults`; a final failure re-raises the last error with the same set on it.
+- A retried LLM call never re-runs a tool: tools run only after a reply arrives.
+
+`claude.Claude` takes the agent's OpenAI-style messages, so it can take over mid-run: system messages become `system`, tool calls `tool_use` blocks, tool results `tool_result` blocks, and consecutive user content one user turn. Tool-call ids with characters Anthropic rejects are rewritten, the same way in the matching result; arguments that aren't JSON become `{}` (their error is already the result). OpenRouter's `reasoning_details` are dropped. Input tokens count all prompt tokens, cache reads and writes included, as for OpenRouter. `budgets.yaml` prices it at Anthropic's list price ($1 / $5 per 1M, cache read $0.10, write $1.25). No prompt caching: Haiku 4.5's minimum cacheable prompt (4,096 tokens) is longer than ours.
+
+**Malformed tool-call JSON is not retried.** A reply whose tool call has arguments that aren't JSON is a successful call: the agent sends `arguments are not valid JSON` back as that tool's result and goes on, with or without the reliability layer, at the cost of a step.
+
+**Fault injection** (`faults.Injected`, also with the guard's interface, between `Reliable` and the guard). Before each call, with probability `rate`, it injects one fault drawn uniformly from `kinds`: a timeout, a 429 with a 1 s Retry-After, a 5xx (each raised as `InjectedFault`, a ProviderError), or a free reply whose `build_circuit` call has truncated JSON arguments. An injected fault never reaches the guard or the provider: no tokens, no cost, no spend-log record. An injected timeout raises at once rather than waiting 180 s. Draws come from `random.Random(seed)`, so a run is reproducible. Without the reliability layer the first injected error ends the run (graded `api error`).
+
+**Experiment** (`evals/phase3-faults.yaml`, not run yet). The 40 tasks on gemini-2.5-flash at injection rates 0, 10, 20 and 30% per LLM call, reliability off and on, one pass each: 320 runs, task by task over the eight cells, so a stop leaves the cells balanced.
+- Faults are drawn per task and rate from seed `0-<task>-<rate>`, the same draws for off and on (until a retry draws again); the fallback is injected at the same rate from its own seed.
+- `scripts/run_faults.py CONFIG` writes `results/phase3/faults/<date>/` (config, meta.json, runs.jsonl, summary.md). Per cell the summary has the success rate with a 95% Wilson interval (one pass, so no spread across seeds), api errors, total cost and cost per run, p50/p95 run latency (wall time, nearest rank), and retries, fallbacks and injected faults per run. Unlike the eval, runs ended by an API error count as failures.
+- `--estimate` prints the expected and worst-case cost with no API calls: expected is the eval's per-run estimate, raised for the extra call each injected malformed reply causes, plus the calls that fall back ((rate × 3/4)^4 of calls, priced on Haiku); worst is every step at the guard's worst case on both providers. `--summarize DIR` rewrites the summary. The run stops above 2× the expected cost, and the guard refuses any call over the phase3 cap ($12).
+
 ## Still to build
 
-- An Anthropic client (OpenRouter is done).
 - A rule for what happens when `verify` fails: let the agent revise a limited number of times, then report the failure instead of answering.
 - A final answer that reports more than one bicycle code (gross and two-gross) can't be verified: `verify` takes one result per architecture.
 - A comparison tool that computes ratios and differences, so answers can state them and still pass check (c).
