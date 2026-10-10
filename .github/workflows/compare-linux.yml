@@ -1,0 +1,88 @@
+name: Compare on Linux
+
+# Manual only: reruns scripts/compare.py on the Linux runner, built exactly as in ci.yml, and
+# uploads its results.json and table.md with the runner's installed versions and the
+# stage-by-stage dump of scripts/diagnose_platform.py, to diff against the committed results.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  COMPILER_REPO: qiskit-community/bicycle-architecture-compiler
+  COMPILER_COMMIT: bed7e8aba4cc0fb86311b7fa6dad6217c0fce7cb
+  QRE_COMPILER_DIR: ${{ github.workspace }}/bicycle-compiler/target/release
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install
+        run: |
+          pip install -r requirements.txt
+          pip install -e . --no-deps
+
+      - name: Check out the bicycle compiler
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.COMPILER_REPO }}
+          ref: ${{ env.COMPILER_COMMIT }}
+          path: bicycle-compiler
+
+      - name: Restore compiler build and lookup tables
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            bicycle-compiler/target
+            ~/.cargo/registry
+            cache
+          key: bicycle-${{ runner.os }}-${{ env.COMPILER_COMMIT }}-${{ hashFiles('ci/bicycle-Cargo.lock') }}
+
+      - name: Build the compiler
+        working-directory: bicycle-compiler
+        run: |
+          cp "$GITHUB_WORKSPACE/ci/bicycle-Cargo.lock" Cargo.lock
+          cargo build --release --locked -F bicycle_compiler/rsgridsynth -p bicycle_compiler -p bicycle_numerics
+
+      - name: Generate lookup tables
+        run: |
+          mkdir -p cache
+          pids=""
+          for code in gross two-gross; do
+            if [ ! -s "cache/table_$code" ]; then
+              "$QRE_COMPILER_DIR/bicycle_compiler" "$code" generate "cache/table_$code" &
+              pids="$pids $!"
+            fi
+          done
+          for pid in $pids; do wait "$pid"; done
+
+      - name: Record installed versions
+        run: |
+          mkdir -p out
+          pip freeze > out/pip-freeze.txt
+          cp bicycle-compiler/Cargo.lock out/bicycle-Cargo.lock
+
+      - name: Diagnose stages
+        run: python scripts/diagnose_platform.py results/comparison/config.yaml out/diag-linux.json
+
+      - name: Compare
+        run: |
+          python scripts/compare.py results/comparison/config.yaml
+          cp results/comparison/results.json results/comparison/table.md out/
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compare-linux
+          path: out/
