@@ -1,0 +1,15 @@
+{
+ "inputs_sha256": {
+  "results/eval/google_gemini-2.5-flash/2026-10-09/runs-v2.jsonl": "710a9444a3ddf59923ac349b66b5152c37edca7f0031e0d2fdbfd6ab20cdf9a1",
+  "results/eval/anthropic_claude-sonnet-5/2026-10-09/runs-v2.jsonl": "40514585060f4af2c67dd79c65b545343b97e5f2e4dbdb11c733bc5b5dea0934"
+ },
+ "git": {
+  "commit": "e69922563b41142ee1cf83b97da9dbfc9b849327",
+  "dirty": false
+ },
+ "config": {
+  "primary": "results/eval/google_gemini-2.5-flash/2026-10-09/runs-v2.jsonl",
+  "strong": "results/eval/anthropic_claude-sonnet-5/2026-10-09/runs-v2.jsonl",
+  "results_dir": "results/phase3/routing"
+ }
+}

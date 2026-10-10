@@ -1,0 +1,8 @@
+# Phase 3 cost routing, simulated offline from the four-model eval's stored runs (no API calls):
+# each policy's accuracy (grader v2) and cost per task, pass by pass. An escalated task costs the
+# primary's run up to the switch plus the strong model's full run on that task and pass.
+# Copied next to the results in results/phase3/routing/.
+#   .venv/Scripts/python scripts/routing_sim.py evals/phase3-routing.yaml
+primary: results/eval/google_gemini-2.5-flash/2026-10-09/runs-v2.jsonl
+strong: results/eval/anthropic_claude-sonnet-5/2026-10-09/runs-v2.jsonl
+results_dir: results/phase3/routing
