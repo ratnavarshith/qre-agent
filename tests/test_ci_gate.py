@@ -116,10 +116,10 @@ def test_an_in_flight_budget_402_is_an_ordinary_failed_run(ci_gate):
     assert passed  # the rerun succeeded
 
 
-def test_the_run_cap_stopping_a_run_exits_2(ci_gate):
+def test_the_run_cap_stopping_a_run_exits_4(ci_gate):
     with pytest.raises(ci_gate.GateExit, match="budget guard refused") as e:
         ci_gate.run_gate(CFG, TASKS, scripted({}, refuse={("t6", 0)}))
-    assert e.value.code == 2
+    assert e.value.code == 4
 
 
 def test_records_missing_for_a_pass_exit_3(ci_gate):

@@ -6,9 +6,9 @@ Spend phase: the config's, with its run_cap on top. See docs/agent-design.md (CI
 
   .venv/Scripts/python scripts/ci_gate.py evals/ci-gate.yaml
 
-Exit codes: 0 passed, 1 accuracy regression, 2 the run cap stopped it, 3 the gate could not run
-(key missing, rejected or out of credit, or records missing). Never prints the key or the key
-check's response, only dollar amounts.
+Exit codes: 0 passed, 1 accuracy regression, 3 the gate could not run (key missing, rejected
+or out of credit, or records missing), 4 the run cap stopped it (not 2: argparse uses that).
+Never prints the key or the key check's response, only dollar amounts.
 """
 
 import argparse
@@ -132,7 +132,7 @@ def run_gate(cfg, tasks, run_task):
         if why := key_error(rec):
             raise GateExit(3, why)
         if refused:
-            raise GateExit(2, refused)
+            raise GateExit(4, refused)
         return rec
 
     for task in tasks:
