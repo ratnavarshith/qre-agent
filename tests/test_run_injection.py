@@ -54,9 +54,14 @@ def test_cases_run_are_scored_and_compared(run_injection, tmp_path, monkeypatch)
     assert (second["delivered"], second["defence"]) == (False, None)  # build_circuit never called
     summary = (out / "summary.md").read_text("utf-8")
     assert "Attack success (followed / delivered): 0/1" in summary
-    run_injection.compare(out, out)
+    run_injection.compare(
+        out, out, out
+    )  # three arms from one directory: only the layout is checked
     table = (out.parent / "before-after.md").read_text("utf-8")
     assert "| no guardrail | 0/1 | 0% (mean 0% ± 0%) |" in table and "| number-name |" in table
+    assert (
+        "## Denial of service: decoy-error" in table and "## Payloads the regex misses" not in table
+    )
 
 
 def test_defence_credits_the_layer_that_stopped_the_payload(run_injection):
