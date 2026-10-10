@@ -1,5 +1,6 @@
 import inspect
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -278,3 +279,19 @@ def test_system_prompt_points_named_families_to_build_benchmark():
 
     text = system_prompt(load_assumptions())
     assert "build_benchmark" in text and "ripple-carry adder" in text
+
+
+def test_sandbox_runs_code_with_non_ascii_characters():
+    # Agents write π and ⟩ in comments and names; the pipe must not use the console code page.
+    code = (
+        "import math\nfrom qiskit import QuantumCircuit\n"
+        "π = math.pi  # controlled-Rz(π/7) on |0101⟩\n"
+        "circuit = QuantumCircuit(2)\ncircuit.crz(π / 7, 0, 1)\n"
+    )
+    circuit = run_circuit_code(code)
+    assert circuit.data[0].operation.params[0] == pytest.approx(math.pi / 7)
+
+
+def test_sandbox_returns_non_ascii_errors_intact():
+    with pytest.raises(SandboxError, match="name 'θ' is not defined"):
+        run_circuit_code("x = θ  # π\n")

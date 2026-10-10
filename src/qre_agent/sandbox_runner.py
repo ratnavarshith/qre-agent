@@ -61,7 +61,7 @@ def audit_hook(run_dir):
 
 
 def main():
-    out, code = sys.argv[1], sys.stdin.read()
+    out, code = sys.argv[1], sys.stdin.buffer.read().decode("utf-8")  # UTF-8, not the code page
     socket.socket.__init__ = _no_network
     socket.getaddrinfo = socket.create_connection = _no_network
     sys.dont_write_bytecode = True
@@ -75,7 +75,7 @@ def main():
         with open(out, "wb") as f:
             qpy.dump(circuit, f)
     except Exception:  # noqa: BLE001 (any failure goes back to the agent)
-        sys.stderr.write(traceback.format_exc()[-2000:])
+        sys.stderr.buffer.write(traceback.format_exc()[-2000:].encode("utf-8"))
         sys.exit(1)
 
 

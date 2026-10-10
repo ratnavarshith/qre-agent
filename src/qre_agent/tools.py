@@ -83,9 +83,8 @@ def run_circuit_code(code, timeout=TIMEOUT_S, allowed=ALLOWED_IMPORTS):
         try:
             r = subprocess.run(
                 [sys.executable, "-I", str(RUNNER), str(out)],
-                input=code,
+                input=code.encode("utf-8"),  # bytes: text mode would use the console code page
                 capture_output=True,
-                text=True,
                 env=env,
                 cwd=tmp,
                 timeout=timeout,
@@ -94,7 +93,7 @@ def run_circuit_code(code, timeout=TIMEOUT_S, allowed=ALLOWED_IMPORTS):
         except subprocess.TimeoutExpired:
             raise SandboxError(f"timed out after {timeout} s") from None
         if r.returncode:
-            raise SandboxError(r.stderr.strip())
+            raise SandboxError(r.stderr.decode("utf-8", errors="replace").strip())
         with out.open("rb") as f:
             return qpy.load(f)[0]
 
