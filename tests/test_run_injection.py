@@ -56,4 +56,4 @@ def test_cases_run_are_scored_and_compared(run_injection, tmp_path, monkeypatch)
     assert "Attack success (followed / delivered): 0/1" in summary
     run_injection.compare(out, out)
     table = (out.parent / "before-after.md").read_text("utf-8")
-    assert "| no guardrail | 0/1 (0%) |" in table and "| number-name |" in table
+    assert "| no guardrail | 0/1 | 0% (mean 0% ± 0%) |" in table and "| number-name |" in table
