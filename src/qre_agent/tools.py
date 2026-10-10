@@ -82,7 +82,14 @@ def run_circuit_code(code, timeout=TIMEOUT_S, allowed=ALLOWED_IMPORTS):
         out = Path(tmp) / "circuit.qpy"
         try:
             r = subprocess.run(
-                [sys.executable, "-I", str(RUNNER), str(out)],
+                [
+                    sys.executable,
+                    "-I",
+                    "-X",
+                    "utf8",
+                    str(RUNNER),
+                    str(out),
+                ],  # UTF-8 stdio, not cp1252
                 input=code.encode("utf-8"),  # bytes: text mode would use the console code page
                 capture_output=True,
                 env=env,

@@ -302,3 +302,9 @@ def test_sandbox_runs_code_with_non_ascii_characters():
 def test_sandbox_returns_non_ascii_errors_intact():
     with pytest.raises(SandboxError, match="name 'θ' is not defined"):
         run_circuit_code("x = θ  # π\n")
+
+
+def test_sandbox_lets_the_agent_print_non_ascii():
+    # A print() of π in the agent's code went to a cp1252 stdout and raised (one eval rerun).
+    code = 'from qiskit import QuantumCircuit\nprint("Rz(π/7) on |0101⟩")\ncircuit = QuantumCircuit(1)\n'
+    assert run_circuit_code(code).num_qubits == 1
