@@ -1,6 +1,6 @@
 # qre-agent
 
-Working out what a fault-tolerant quantum computer needs to run an algorithm means building the circuit, picking an error-correcting code, and then driving an estimator by hand for each choice. This repo does the estimating part for two architectures, the surface code (Microsoft's QDK estimator) and IBM's bicycle/gross codes (their bicycle compiler), on the same circuits and the same assumptions; the plain-English front end that would write the circuit is not built yet.
+Working out what a fault-tolerant quantum computer needs to run an algorithm means building the circuit, picking an error-correcting code, and then driving an estimator by hand for each choice. This repo does the estimating part for two architectures, the surface code (Microsoft's QDK estimator) and IBM's bicycle/gross codes (their bicycle compiler), on the same circuits and the same assumptions. An LLM agent on top takes a plain-English problem, writes the circuit and runs both estimators (see Phase 2 below).
 
 ## Headline
 
@@ -83,6 +83,31 @@ Bicycle uses 23 to 800x fewer qubits but runs 50 to 140x longer, because it has 
 - **Both sides use gridsynth T counts.** The surface estimate is pinned to the T count that the compiler's gridsynth needs at the same precision, so the architectures pay the same per-rotation cost. v3's own synthesis model uses far fewer T gates per rotation (about 4x at these precisions). `synthesis: native` switches to that for the surface side; I haven't put native-mode results in the table.
 - **Their Qiskit parser has two bugs, so I don't use it.** `scripts/qiskit_parser.py` writes the wrong rotation angle (+t·c instead of −2·t·c; I reported this on upstream issue #26) and puts rotations on the wrong qubits. `src/qre_agent/pbc.py` is my replacement and has tests for both cases.
 - The error totals are sums of per-instruction errors (union bound), so they are conservative. Only tested on Windows.
+
+## Phase 2: the agent
+
+The agent takes a plain-English problem, builds a circuit, estimates it on both architectures and writes an answer, in at most 12 LLM calls. It has five tools: `build_circuit` (Python for a Qiskit circuit, run in a restricted sandbox), `build_benchmark` (qft, qpe, tfim, adder or grover of size n), `estimate_surface`, `estimate_bicycle`, and `verify`. Circuits and results are passed around by id, so the model never re-types them. `verify` is deterministic: it checks that every number in the answer appears in a tool output, for the right architecture. The tools and verifier are in [docs/agent-design.md](docs/agent-design.md).
+
+I ran four models on 40 tasks, 3 passes each (25 standard, 10 free-form where the agent has to write the circuit, 5 ambiguous where it has to state an assumption). A run is correct when the task's checks and the final `verify` both pass. Rates are mean ± standard deviation across the 3 passes, with (min–max). The grader was revised after I read the failures (v2); v1 is shown next to it. Full tables, costs and failure counts are in [results/eval/summary.md](results/eval/summary.md).
+
+| model | correct (v2) | correct (v1) | verify first try (v2) | cost per run | latency p50 | p95 |
+|---|---|---|---|---|---|---|
+| gemini-2.5-flash | 82% ± 6 (75–87) | 75% ± 4 (70–78) | 93% ± 5 (88–97) | $0.0044 | 9 s | 26 s |
+| deepseek-v3.2 | 84% ± 3 (82–88) | 82% ± 4 (78–85) | 86% ± 3 (82–88) | $0.0080 | 68 s | 170 s |
+| haiku-4.5 | 81% ± 1 (80–82) | 72% ± 5 (68–78) | 96% ± 1 (95–98) | $0.0290 | 13 s | 26 s |
+| sonnet-5 | 97% ± 1 (95–98) | 96% ± 1 (95–98) | 100% ± 0 (100–100) | $0.0464 | 19 s | 66 s |
+
+- **Sonnet is about 15 points ahead** of the others (97% against 81 to 84%), at 1.6 to 10x the cost per run. All models get the standard tasks right (93 to 100%); the gap is in free-form circuits (87% against 43 to 60%).
+- **The three cheaper models are within noise of each other under v2** (81 to 84%, spreads of 1 to 6 points). Under v1, DeepSeek is 10 points above Haiku, so that ordering depends on the grader.
+- **Verify passes more often than answers are correct.** 53 runs passed `verify` and were still wrong (Gemini 16, Haiku 23, DeepSeek 14), because it checks the answer against the tool outputs, not that the circuit or settings were the right ones. So passing `verify` alone is not enough to decide when to escalate to a stronger model.
+- **The eval found three bugs, now fixed.** Gemini rejects numeric enums in tool schemas and called `estimate_bicycle` with no arguments, so the schemas use string enums. `build_circuit` sent code to the sandbox in the Windows code page, so a π in the code crashed it (27 runs rerun after the fix). Rotations at ±π/2 made `estimate_surface` raise on ordinary circuits (rxx, ryy, controlled phases at π, the 4-bit Draper adder); `prepare()` now turns them into Clifford gates.
+
+Limitations:
+
+- **The grader checks numbers, not labels.** "14 physical qubits" for a circuit's 14 logical qubits passes, because 14 is in a tool output.
+- **Assumption checks are regexes.** An ambiguous task passes if the answer states the value or says it assumed or defaulted one; it can't judge whether the assumption was sensible.
+- **One eval run per model, 3 passes.** The spreads are run-to-run noise over 3 samples, not confidence intervals, and the same seed doesn't reproduce a run.
+- **The grader changed after I read the failures.** Its rules came from the same runs they are scored on, which is why v1 is shown. v2 moves some models by up to 9 points (Haiku 72% to 81%) and Sonnet by 1.
 
 ## Prior work
 
