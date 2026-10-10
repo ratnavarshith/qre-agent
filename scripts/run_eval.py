@@ -6,6 +6,7 @@ summary.md. Traces go to runs/<run_id>.jsonl. Spend phase: the config's (eval).
   .venv/Scripts/python scripts/run_eval.py evals/pilot.yaml
   .venv/Scripts/python scripts/run_eval.py --rerun-errors results/eval/<model>/<date>  # api errors, once
   .venv/Scripts/python scripts/run_eval.py --rerun DIR --runs TASK:REPEAT ... --reason TEXT
+  .venv/Scripts/python scripts/run_eval.py --regrade DIR ...  # current grader, from the traces
   .venv/Scripts/python scripts/run_eval.py --summarize results/eval/<model>/<date>  # redo summary.md
   .venv/Scripts/python scripts/run_eval.py --self-test   # grader self-test, no API calls
 """
@@ -28,6 +29,7 @@ from qre_agent.eval import (
     past_runs,
     read_trace,
     record,
+    regrade,
     replace_reruns,
     run_from_trace,
     self_test,
@@ -211,6 +213,35 @@ def rerun_errors(path, guard):
     return rerun(path, guard, runs, "api error")
 
 
+def regrade_dir(path):
+    """Grades every run of the eval in `path` again with the current grader, from the traces (no
+    LLM calls), into runs-v<version>.jsonl and summary-v<version>.md next to runs.jsonl."""
+    path = Path(path)
+    cfg = yaml.safe_load((path / "config.yaml").read_text(encoding="utf-8"))
+    meta = json.loads((path / "meta.json").read_text(encoding="utf-8"))
+    suite = load_suite(REPO_ROOT / cfg["tasks"])
+    if suite["sha256"] != meta["tasks_sha256"]:
+        raise SystemExit("the task file changed since this eval ran; not regrading")
+    tasks = {t["id"]: t for t in suite["tasks"]}
+    lines = (path / "runs.jsonl").read_text(encoding="utf-8").splitlines()
+    old = [json.loads(line) for line in lines]
+    new = [regrade(tasks[r["task"]], r, suite, RUNS_DIR) for r in old]
+    version = new[0]["grader"]
+    out = path / f"runs-v{version}.jsonl"
+    out.write_text("".join(json.dumps(r) + "\n" for r in new), encoding="utf-8")
+    meta = meta | {"grader": version, "regraded": time.strftime("%Y-%m-%d %H:%M:%S %z"),
+                   "regrade_git": git_state()}  # fmt: skip
+    (path / f"summary-v{version}.md").write_text(summarize(new, meta), encoding="utf-8")
+    changed = [(a, b) for a, b in zip(old, new, strict=True)
+               if (a["correct"], a["category"]) != (b["correct"], b["category"])]  # fmt: skip
+    print(f"{path}: {len(changed)} of {len(new)} runs graded differently")
+    for a, b in changed:
+        print(
+            f"  {a['task']} r{a['repeat']}: {a['category'] or 'correct'} -> {b['category'] or 'correct'}"
+        )
+    return changed
+
+
 def resummarize(path):
     path = Path(path)
     records = [json.loads(line) for line in (path / "runs.jsonl").read_text("utf-8").splitlines()]
@@ -267,11 +298,16 @@ def main():
     parser.add_argument("--rerun", metavar="DIR", help="rerun the --runs of DIR once")
     parser.add_argument("--runs", nargs="+", metavar="TASK:REPEAT", help="runs for --rerun")
     parser.add_argument("--reason", help="why the --runs are rerun (recorded)")
+    parser.add_argument("--regrade", metavar="DIR", nargs="+", help="grade DIR's runs again")
     parser.add_argument("--summarize", metavar="DIR", help="rewrite DIR/summary.md")
     parser.add_argument("--self-test", action="store_true", help="test the grader, no API calls")
     args = parser.parse_args()
     if args.summarize:
         return resummarize(args.summarize)
+    if args.regrade:
+        for path in args.regrade:
+            regrade_dir(path)
+        return
     if args.rerun:
         if not (args.runs and args.reason):
             parser.error("--rerun needs --runs and --reason")

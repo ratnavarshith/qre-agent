@@ -187,3 +187,46 @@ def test_selected_runs_are_rerun_with_the_reason_recorded(run_eval, tmp_path, mo
     assert "0 of 2 runs on the first attempt, 0 after" in (out / "summary.md").read_text("utf-8")
     with pytest.raises(SystemExit, match="not in this eval"):
         run_eval.rerun(out, guard, {("no-such-task", 0)}, "x")
+
+
+def test_regrade_replays_the_trace_and_stops_where_the_current_rules_pass(
+    run_eval, tmp_path, monkeypatch
+):
+    """The first automatic verify fails at run time (standing in for an older rule), the retry
+    passes. Regraded with the current rules from the trace alone, the first answer passes, so
+    the run counts as passing on the first try."""
+    monkeypatch.setattr(run_eval, "OpenRouter", Scripted)
+    Scripted.failures = 0
+    real_verify, calls = run_eval.Toolbox.verify, []
+
+    def old_rules(self, *args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return {"passed": False, "failures": [{"check": "numbers_match", "reason": "old"}]}
+        return real_verify(self, *args, **kwargs)
+
+    monkeypatch.setattr(run_eval.Toolbox, "verify", old_rules)
+    budgets = tmp_path / "budgets.yaml"
+    prices = {"fake": {"input": 1.0, "output": 2.0}}
+    budgets.write_text(yaml.safe_dump({"caps": {"eval": 1}, "prices": prices}))
+    guard = Guard("eval", budgets, tmp_path / "spend.jsonl")
+    cfg = {"model": "fake", "phase": "eval", "tasks": "evals/tasks.yaml", "runs": 1, "seed": 0,
+           "max_steps": 6, "max_tokens": 100,
+           "stop": {"cost_factor": 100, "api_error_rate": 1.0, "min_runs": 10}}  # fmt: skip
+    config = tmp_path / "config.yaml"
+    config.write_text(yaml.safe_dump(cfg))
+    suite = run_eval.load_suite(run_eval.REPO_ROOT / cfg["tasks"])
+    tasks = [t for t in suite["tasks"] if t["id"] == TASK]
+    run_eval.run_eval(config, cfg, tasks, suite, guard, expected=1.0)
+    (out,) = (tmp_path / "eval" / "fake").iterdir()
+    (before,) = [json.loads(line) for line in (out / "runs.jsonl").read_text("utf-8").splitlines()]
+    assert before["correct"] and not before["verify_first_try"] and before["verify_after_retry"]
+
+    monkeypatch.setattr(run_eval.Toolbox, "verify", real_verify)
+    assert run_eval.regrade_dir(out) == []  # still correct: only the verify flags move
+    (after,) = [
+        json.loads(line) for line in (out / "runs-v2.jsonl").read_text("utf-8").splitlines()
+    ]
+    assert after["correct"] and after["verify_first_try"] and not after["verify_after_retry"]
+    assert after["grader"] == 2 and after["cost_usd"] == before["cost_usd"]
+    assert (out / "summary-v2.md").exists()

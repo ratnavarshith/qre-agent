@@ -14,8 +14,8 @@ from pathlib import Path
 
 import yaml
 
-from . import semantics
-from .agent import Run, system_prompt
+from . import circuits, semantics
+from .agent import Run, final_answer, system_prompt
 from .spend import REPO_ROOT, cost
 from .tools import SCHEMAS, Toolbox, run_circuit_code
 from .verify import REPORTED
@@ -279,6 +279,61 @@ def read_trace(path):
     final = next((r for r in records if r["type"] == "final"), None)
     calls = [r for r in records if r["type"] == "llm_call"]
     return final, (calls[-1]["message"] if calls else None)
+
+
+def replay(task, path):
+    """(toolbox, run, last assistant message) of a stored run, re-verified with the current
+    rules, for regrading without an LLM. Nothing is re-estimated: circuits are rebuilt from the
+    logged build calls, results and outputs come from the log, and each automatic verify is
+    redone on the answer of that step with the toolbox as it was then. If the current rules
+    pass a first attempt the stored run failed, the run stops there, as the loop would have.
+    Steps, tokens and cost stay those of the stored run."""
+    toolbox = Toolbox(prompt=task["prompt"])
+    replies, attempts, final, last = {}, [], None, None
+    for rec in map(json.loads, Path(path).read_text(encoding="utf-8").splitlines()):
+        if rec["type"] == "llm_call":
+            replies[rec["step"]] = last = rec["message"]
+        elif rec["type"] == "tool_call":
+            out, args = rec["result"], rec["arguments"]
+            toolbox.outputs.append(out)
+            if is_tool_error(out) or not isinstance(args, dict):
+                continue
+            if rec["name"] == "build_benchmark":
+                toolbox.circuits[out["circuit_id"]] = circuits.FAMILIES[args["family"]](args["n"])
+            elif rec["name"] == "build_circuit":
+                toolbox.circuits[out["circuit_id"]] = run_circuit_code(args["code"])
+            elif rec["name"].startswith("estimate_"):
+                toolbox.results[out["result_id"]] = out
+        elif rec["type"] == "auto_verify":
+            text, surface, bicycle, _ = final_answer(replies[rec["step"]]["content"], toolbox)
+            attempts.append((json.loads(text), toolbox.verify(surface, bicycle, text)))
+        elif rec["type"] == "final":
+            final = rec
+    answer = verification = None
+    first = after = False
+    if attempts and attempts[0][1]["passed"]:
+        (answer, verification), first = attempts[0], True
+    elif attempts:
+        answer, verification = attempts[-1]
+        after = len(attempts) > 1 and verification["passed"]
+    stop = "answered" if attempts else final["stop_reason"]
+    run = Run(Path(path).stem, stop, answer, verification, final["steps"], final["totals"],
+              Path(path), first, after)  # fmt: skip
+    return toolbox, run, last
+
+
+def regrade(task, rec, suite, runs_dir=REPO_ROOT / "runs"):
+    """The runs.jsonl record `rec`, graded again with the current grader from its trace."""
+    toolbox, run, last = replay(task, Path(runs_dir) / f"{rec['run_id']}.jsonl")
+    g = grade(task, toolbox, run, suite, last)
+    return rec | {
+        "correct": g["correct"],
+        "category": g["category"],
+        "failures": g["failures"],
+        "verify_first_try": run.verify_passed_first_try,
+        "verify_after_retry": run.verify_passed_after_retry,
+        "grader": GRADER_VERSION,
+    }
 
 
 def run_from_trace(run_id, path):
