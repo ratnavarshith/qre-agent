@@ -91,7 +91,10 @@ def no_answer(stop_reason, steps=12):
     [
         ("step_limit", {"content": "", "tool_calls": [{"id": "1"}]}, "budget/step limit"),
         ("step_limit", {"content": "I can't build this circuit."}, "gave up"),
-        ("step_limit", {"content": '{"summary": "x", "estimates": ['}, "unit/format"),
+        # grader v2: an answer with no estimate behind it is made up, not a format slip
+        ("step_limit", {"content": '{"summary": "x", "estimates": ['}, "made-up numbers"),
+        # grader v2: asking the user is giving up, even when the reply says "estimates"
+        ("step_limit", {"content": "Give me n and I will run the estimates as JSON."}, "gave up"),
         ("error: BudgetError: phase eval: worst case ...", None, "budget/step limit"),
         ("error: RuntimeError: OpenRouter HTTP 502: ...", None, "api error"),
     ],
@@ -244,3 +247,15 @@ def test_a_rerun_for_another_reason_is_not_an_api_error():
     budget = rec() | {"task": "c", "repeat": 0}
     budget["rerun_of"] = {"run_id": "z", "stop_reason": "error: BudgetError: over the cap"}
     assert ev.api_error_counts([fixed, after_error, budget]) == (1, 0)
+
+
+def test_an_unparsed_answer_after_real_estimates_is_a_format_failure():
+    toolbox = ev.Toolbox()
+    toolbox.results["r1"] = {"result_id": "r1", "architecture": "surface"}
+    last = {"content": 'Here it is: {"summary": "x", "estimates": [{"result_id": "r1"}]}'}
+    g = ev.grade(TASKS["std-qft4-1e3-twogross"], toolbox, no_answer("step_limit"), SUITE, last)
+    assert g["category"] == "unit/format"
+
+
+def test_records_carry_the_grader_version():
+    assert ev.GRADER_VERSION == 2

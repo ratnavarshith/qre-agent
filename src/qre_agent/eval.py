@@ -21,6 +21,9 @@ from .tools import SCHEMAS, Toolbox, run_circuit_code
 from .verify import REPORTED
 
 TASKS_PATH = REPO_ROOT / "evals" / "tasks.yaml"
+# 2: QFT in either qubit order, written-out time units and float noise (verify), a stated value
+# counts as the assumption, no-estimate answers are made up and asking the user is giving up.
+GRADER_VERSION = 2
 TYPES = ("standard", "free-form", "ambiguous")
 DIFFICULTIES = ("easy", "medium", "hard", "ambiguous")
 # A failed run's category is the first of its failures in this order.
@@ -55,7 +58,6 @@ CODE_WRITTEN = {
     "two-gross": r"two[- ]gross|\[\[288,\s*12,\s*18\]\]",
     "gross": r"(?<!two-)(?<!two )\bgross\b|\[\[144,\s*12,\s*12\]\]",
 }
-ASSUMED = re.compile(r"assum|default", re.IGNORECASE)
 FAILS = re.compile(
     r"exceed|\bfail|(?:over|above|outside|beyond) (?:the |its )?(?:error |logical error )?budget"
     r"|(?:larger|greater|higher|more) than (?:the |its )?(?:error |logical error )?budget"
@@ -209,7 +211,9 @@ def grade(task, toolbox, run, suite, last_message=None):
         last = last_message or {}
         if last.get("tool_calls"):
             fail("budget/step limit", f"no answer within {run.steps} steps")
-        elif "estimates" in (last.get("content") or ""):
+        elif '"estimates"' in (last.get("content") or "") and not toolbox.results:
+            fail("made-up numbers", "answered without running any estimate")
+        elif '"estimates"' in (last.get("content") or ""):
             fail("unit/format", "the final answer never parsed as the required JSON")
         else:
             fail("gave up", f"stopped without an answer: {(last.get('content') or '')[:200]!r}")
@@ -232,8 +236,6 @@ def grade(task, toolbox, run, suite, last_message=None):
         if any(b != suite["error_budget"] for b in used["budgets"]):
             fail("wrong assumptions", f"error budgets {used['budgets']}, expected the default")
         assumed = {key: used[key] for key in task.get("assume", ())}
-        if assumed and not ASSUMED.search(summary):
-            fail("wrong assumptions", "the summary doesn't say it assumed anything")
         for key, value in assumed.items():
             if not states(key, value, summary):
                 fail("wrong assumptions", f"the summary doesn't state the {key} used ({value})")
@@ -328,6 +330,7 @@ def record(task, toolbox, run, grading, model, seed, repeat, wall_s, rerun_of=No
         "paced_wait_s": paced,
         "llm_s": t.get("llm_s", 0.0) - paced,
         "tool_s": t.get("tool_s", 0.0),
+        "grader": GRADER_VERSION,
     } | ({"rerun_of": {k: rerun_of[k] for k in RERUN_KEYS if k in rerun_of}} if rerun_of else {})
 
 
@@ -463,7 +466,7 @@ def _estimate(task, suite, settings, wrong_circuit=False):
     return toolbox, toolbox.results[s["result_id"]], toolbox.results[b["result_id"]]
 
 
-def _answer(task, s, b, said, fail_note=True, extra="", runtime_scale=1):
+def _answer(task, s, b, said, fail_note=True, extra="", runtime_scale=1, lead="assuming"):
     """A final answer reporting results s and b. `said` holds the settings the summary states
     ({} states none); `fail_note` says when a result is over budget."""
     parts = []
@@ -473,7 +476,7 @@ def _answer(task, s, b, said, fail_note=True, extra="", runtime_scale=1):
         parts.append(f"an error budget of {s['assumptions']['error_budget']:g}")
     if "code" in said:
         parts.append(f"the {said['code']} code")
-    summary = _desc(task, said.get("n")) + (f", assuming {', '.join(parts)}" if said else "")
+    summary = _desc(task, said.get("n")) + (f", {lead} {', '.join(parts)}" if said else "")
     summary += (
         f": the surface code needs {s['physical_qubits']} physical qubits for "
         f"{s['runtime_ns']} ns ({s['physical_qubit_seconds']} physical qubit-seconds) and the "
@@ -554,6 +557,8 @@ def self_test(task, suite):
         alt = _estimate(task, suite, alternative)
         alt_said = {k: alternative[k] for k in ("p", "code", "n") if k in alternative}
         check("alternative assumption", None, *alt, _answer(task, *alt[1:], alt_said))
+        check("values stated, no 'assumed'", None, *reference,
+              _answer(task, s, b, said, lead="at"))  # fmt: skip
         given = {k: v for k, v in said.items() if k not in task["assume"]}
         check("assumption unstated", "wrong assumptions", *reference,
               _answer(task, s, b, given))  # fmt: skip
