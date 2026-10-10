@@ -17,6 +17,7 @@ from qiskit.circuit.library import get_standard_gate_name_mapping
 
 from . import bicycle, circuits, surface
 from .assumptions import load_assumptions
+from .cache import cache_key
 from .verify import verify
 
 ALLOWED_IMPORTS = ("qiskit", "numpy", "math", "cmath", "fractions", "itertools", "functools")
@@ -286,13 +287,14 @@ class Toolbox:
     Tools are safe to repeat: the same call returns the same output under a new id and leaves
     earlier ids and results alone (tests/test_tools.py)."""
 
-    def __init__(self, assumptions=None, prompt="", timeout=TOOL_TIMEOUT_S):
+    def __init__(self, assumptions=None, prompt="", timeout=TOOL_TIMEOUT_S, cache=None):
         """`prompt` is the task; numbers in it count as known to verify. `timeout`: seconds an
         estimate may take; it runs in a child process that is killed then. None runs estimates
-        in this process, with no limit."""
+        in this process, with no limit. `cache`: an EstimateCache, or None for no caching."""
         self.assumptions = assumptions or load_assumptions()
         self.prompt = prompt
         self.timeout = timeout
+        self.cache = cache
         self.circuits, self.results, self.outputs = {}, {}, []
 
     def call(self, name, arguments):
@@ -305,10 +307,16 @@ class Toolbox:
         self.outputs.append(out)
         return json.dumps(out)
 
-    def _estimate(self, fn, circuit, a):
+    def _estimate(self, kind, fn, circuit, a):
+        if self.cache is not None:
+            key = cache_key(kind, circuit, a)
+            if (hit := self.cache.get(key)) is not None:
+                return hit
         if self.timeout is None:
-            return fn(circuit, a)
-        return run_in_child(fn, circuit, a, timeout=self.timeout)
+            r = fn(circuit, a)
+        else:
+            r = run_in_child(fn, circuit, a, timeout=self.timeout)
+        return r if self.cache is None else self.cache.put(key, r)
 
     def build_circuit(self, code):
         circuit = run_circuit_code(code)
@@ -352,7 +360,7 @@ class Toolbox:
 
     def estimate_surface(self, circuit_id, physical_error_rate=None, error_budget=None):
         a = self._assumptions(physical_error_rate=physical_error_rate, error_budget=error_budget)
-        r = self._estimate(surface.estimate_surface, self.circuits[circuit_id], a)
+        r = self._estimate("surface", surface.estimate_surface, self.circuits[circuit_id], a)
         return self._record("surface", circuit_id, {**r, "passes": r["error"] <= a.error_budget})
 
     def estimate_bicycle(self, circuit_id, code=None, physical_error_rate=None, error_budget=None):
@@ -366,7 +374,7 @@ class Toolbox:
         a = self._assumptions(
             bicycle_code=code, physical_error_rate=physical_error_rate, error_budget=error_budget
         )
-        r = self._estimate(bicycle.estimate_bicycle, self.circuits[circuit_id], a)
+        r = self._estimate("bicycle", bicycle.estimate_bicycle, self.circuits[circuit_id], a)
         return self._record("bicycle", circuit_id, r)
 
     def _result(self, result_id, architecture):
