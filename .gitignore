@@ -22,8 +22,9 @@ env/
 .ipynb_checkpoints/
 .cache/
 
-# Local Claude settings
-.claude/settings.local.json
+# Claude Code config and project instructions (kept locally)
+.claude/
+CLAUDE.md
 
 # OS / editor
 .DS_Store
