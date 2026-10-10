@@ -3,6 +3,7 @@ OpenRouter reports what it billed for each call (usage.cost); the guard logs tha
 budgets.yaml estimate and warns when they disagree. Failures raise ProviderError, classified
 for the retry layer in reliability.py."""
 
+import http.client
 import json
 import time
 import urllib.error
@@ -15,12 +16,13 @@ from .spend import Reply, api_key
 URL = "https://openrouter.ai/api/v1/chat/completions"
 TIMEOUT_S = 180
 CACHE_CONTROL = {"type": "ephemeral"}
-RETRYABLE = ("timeout", "rate_limit", "server", "missing_usage", "malformed_json")
+RETRYABLE = ("timeout", "rate_limit", "server", "missing_usage", "malformed_json", "connection")
 
 
 class ProviderError(RuntimeError):
-    """A failed LLM call. `kind` is timeout, rate_limit (429), server (5xx), missing_usage or
-    malformed_json (a tool call whose arguments aren't JSON), which reliability.Reliable retries, or client (other 4xx) or connection, which it doesn't.
+    """A failed LLM call. `kind` is timeout, rate_limit (429), server (5xx), missing_usage,
+    malformed_json (a tool call whose arguments aren't JSON) or connection (unreachable, reset, a
+    reply cut off), which reliability.Reliable retries, or client (other 4xx), which it doesn't.
     `retry_after` is the provider's Retry-After in seconds, if it sent one."""
 
     def __init__(self, kind, message, status=None, retry_after=None):
@@ -125,6 +127,8 @@ class OpenRouter:
             if isinstance(e.reason, TimeoutError):
                 raise ProviderError("timeout", f"OpenRouter timed out: {e.reason}") from None
             raise ProviderError("connection", f"OpenRouter unreachable: {e.reason}") from None
+        except (http.client.HTTPException, OSError) as e:  # IncompleteRead, a reset, ...
+            raise ProviderError("connection", f"OpenRouter connection failed: {e!r}") from None
 
 
 class Pacer:

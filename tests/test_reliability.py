@@ -1,3 +1,4 @@
+import http.client
 import io
 import json
 import random
@@ -92,7 +93,7 @@ def test_fallback_only_after_the_retries_are_used_up():
 
 def test_other_errors_are_not_retried_and_do_not_fall_back():
     fallback = FakeGuard()
-    for error in (err("client"), err("connection"), RuntimeError("bug")):
+    for error in (err("client"), RuntimeError("bug")):
         primary = FakeGuard(error)
         with pytest.raises(type(error)):
             Reliable(primary, (fallback, None, "fake2"), sleep=Sleeps()).complete(
@@ -188,6 +189,11 @@ def test_openrouter_errors_are_classified(monkeypatch):
         (TimeoutError("read timed out"), "timeout", None),
         (urllib.error.URLError(TimeoutError()), "timeout", None),
         (urllib.error.URLError("no route"), "connection", None),
+        # seen in the fault-injection experiment: a reply cut off mid-body
+        (http.client.IncompleteRead(b"x" * 11), "connection", None),
+        (http.client.RemoteDisconnected("closed"), "connection", None),
+        (ConnectionResetError("reset by peer"), "connection", None),
+        (OSError("network is unreachable"), "connection", None),
     ]  # fmt: skip
     for error, kind, after in cases:
         monkeypatch.setattr("urllib.request.urlopen", raising(error))
@@ -370,3 +376,13 @@ def test_a_malformed_reply_falls_back_after_the_retries_and_is_returned_if_still
     )
     assert out.message["tool_calls"] and (out.model, out.fallback) == ("fake2", True)
     assert out.faults == ("malformed_json",) * 4  # the agent turns it into a tool error
+
+
+def test_a_dropped_connection_is_retried_and_then_falls_back():
+    primary, fallback = (
+        FakeGuard(*[err("connection")] * 4),
+        FakeGuard(ok=reply("from the fallback")),
+    )
+    out = Reliable(primary, (fallback, None, "fake2"), sleep=Sleeps()).complete(None, "fake", [], 1)
+    assert (out.text, out.retries, out.faults) == ("from the fallback", 3, ("connection",) * 4)
+    assert ProviderError("connection", "x").retryable
