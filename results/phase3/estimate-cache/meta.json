@@ -1,0 +1,32 @@
+{
+ "versions": {
+  "qdk": "1.32.3",
+  "qiskit": "2.5.2",
+  "bicycle_compiler": "0.2.1",
+  "bicycle_compiler_commit": "bed7e8aba4cc0fb86311b7fa6dad6217c0fce7cb",
+  "rsgridsynth": "0.2.2",
+  "cargo_lock_sha256": "605a42f1b3414fe57ef0b3620b8bef1553480759228a94bd69f7799bb53e0101"
+ },
+ "measurement_tables": {
+  "gross": "b11d3d1ac0aa19067b6db52bd7ce75d980976c2dc910a49cc543bf4bbc193fed",
+  "two-gross": "2f1c57ace3e989c9e6a85e958262971c87c96eff638138e18c6b37919d9ee248"
+ },
+ "hardware": {
+  "platform": "Windows-10-10.0.26200-SP0",
+  "processor": "Intel64 Family 6 Model 191 Stepping 2, GenuineIntel",
+  "python": "3.11.9"
+ },
+ "git": {
+  "commit": "9eabc10b6775fc3e1175d7657de9d31f17f264ee",
+  "dirty": false
+ },
+ "config": {
+  "evals": [
+   "results/eval/google_gemini-2.5-flash/2026-10-09",
+   "results/eval/deepseek_deepseek-v3.2/2026-10-09",
+   "results/eval/anthropic_claude-haiku-4.5/2026-10-09",
+   "results/eval/anthropic_claude-sonnet-5/2026-10-09"
+  ],
+  "results_dir": "results/phase3/estimate-cache"
+ }
+}

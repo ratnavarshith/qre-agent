@@ -1,0 +1,11 @@
+# Phase 3 estimate cache: how many estimator calls the four-model eval would have saved. Replays
+# each stored run's tool calls in the order they ran, rebuilding circuits from the logged build
+# calls and computing each estimate's cache key; nothing is estimated and no LLM is called.
+# Copied next to the results in results/phase3/estimate-cache/.
+#   .venv/Scripts/python scripts/cache_savings.py evals/phase3-cache.yaml
+evals:  # run order of the four-model eval
+  - results/eval/google_gemini-2.5-flash/2026-10-09
+  - results/eval/deepseek_deepseek-v3.2/2026-10-09
+  - results/eval/anthropic_claude-haiku-4.5/2026-10-09
+  - results/eval/anthropic_claude-sonnet-5/2026-10-09
+results_dir: results/phase3/estimate-cache
