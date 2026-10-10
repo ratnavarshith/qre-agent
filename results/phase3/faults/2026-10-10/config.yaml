@@ -1,0 +1,26 @@
+# Phase 3 reliability experiment: the 40 tasks in evals/tasks.yaml under injected faults, on
+# google/gemini-2.5-flash, at each injection rate with the reliability layer off and on, one pass
+# each (40 x 4 x 2 = 320 runs). Copied next to the results in results/phase3/faults/<date>/.
+#   .venv/Scripts/python scripts/run_faults.py evals/phase3-faults.yaml --estimate   # cost, no API calls
+#   .venv/Scripts/python scripts/run_faults.py evals/phase3-faults.yaml
+model: google/gemini-2.5-flash
+phase: phase3
+tasks: evals/tasks.yaml
+runs: 1
+seed: 0  # sent to OpenRouter; also seeds the injected faults and the backoff jitter, per task and rate
+max_steps: 12
+max_tokens: 4096  # per LLM call
+injection_rates: [0.0, 0.1, 0.2, 0.3]  # per LLM call, on the primary and the fallback alike
+fault_kinds: [timeout, rate_limit, server, malformed_json]  # drawn uniformly
+reliability: [false, true]
+retry: {max_retries: 3, base_s: 1.0, cap_s: 30.0}
+fallback: {model: claude-haiku-4-5, phase: phase3}  # Anthropic API, ANTHROPIC_API_KEY
+# Cost estimate (no API calls): mean cost of earlier runs of the profile models, as in the eval
+# configs; the fallback's are its OpenRouter runs from the four-model eval (same tokenizer).
+profile: {model: google/gemini-2.5-flash}
+fallback_profile: {model: anthropic/claude-haiku-4.5}
+# Stop and ask when the cost passes cost_factor x the expected cost. API errors don't stop this
+# one: without the reliability layer, injected faults are meant to end runs.
+stop: {cost_factor: 2.0}
+
+# run at git commit e5fbedc522d8efa4cea51f6b1872ccfcc933de3e, dirty: False

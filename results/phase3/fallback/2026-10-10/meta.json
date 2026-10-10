@@ -1,0 +1,76 @@
+{
+ "model": "google/gemini-2.5-flash",
+ "date": "2026-10-10 00:04:53 -0500",
+ "config": {
+  "model": "google/gemini-2.5-flash",
+  "phase": "phase3",
+  "tasks": "evals/tasks.yaml",
+  "only": [
+   "std-qft4-1e3-twogross",
+   "std-adder16-1e4-gross",
+   "std-tfim8-1e4-twogross",
+   "std-grover16-1e3-twogross",
+   "std-qpe4-1e4-gross",
+   "ff-qft-noswap-5",
+   "ff-ghz-rz-5",
+   "ff-grover-4",
+   "amb-qft-n",
+   "amb-adder4-code"
+  ],
+  "runs": 1,
+  "seed": 0,
+  "max_steps": 12,
+  "max_tokens": 4096,
+  "injection_rates": [
+   1.0
+  ],
+  "fallback_injection_rate": 0.0,
+  "fault_kinds": [
+   "timeout",
+   "rate_limit",
+   "server",
+   "malformed_json"
+  ],
+  "reliability": [
+   true
+  ],
+  "retry": {
+   "max_retries": 3,
+   "base_s": 1.0,
+   "cap_s": 30.0
+  },
+  "fallback": {
+   "model": "claude-haiku-4-5",
+   "phase": "phase3"
+  },
+  "results_dir": "results/phase3/fallback",
+  "profile": {
+   "model": "google/gemini-2.5-flash"
+  },
+  "fallback_profile": {
+   "model": "anthropic/claude-haiku-4.5"
+  },
+  "stop": {
+   "cost_factor": 2.0
+  }
+ },
+ "tasks": "evals/tasks.yaml",
+ "tasks_sha256": "230e2860eddc0814fe96aa5acfb0d373d62f6bdec54391201dd8fa98a384d952",
+ "versions": {
+  "qdk": "1.32.3",
+  "qiskit": "2.5.2",
+  "bicycle_compiler": "0.2.1",
+  "bicycle_compiler_commit": "bed7e8aba4cc0fb86311b7fa6dad6217c0fce7cb",
+  "rsgridsynth": "0.2.2",
+  "cargo_lock_sha256": "605a42f1b3414fe57ef0b3620b8bef1553480759228a94bd69f7799bb53e0101"
+ },
+ "hardware": {
+  "platform": "Windows-10-10.0.26200-SP0",
+  "processor": "Intel64 Family 6 Model 191 Stepping 2, GenuineIntel",
+  "python": "3.11.9"
+ },
+ "git": {
+  "commit": "e5fbedc522d8efa4cea51f6b1872ccfcc933de3e",
+  "dirty": false
+ }
+}
