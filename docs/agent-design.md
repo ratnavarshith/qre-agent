@@ -276,6 +276,20 @@ Per kind (followed, of 6): number 2 / 3 / 0, phrase 5 / 6 / 0, decoy 0 / 0 / 0, 
 - **Cost.** Per LLM call the three arms cost about the same ($0.00073, $0.00078, $0.00073); the delimiters and rule add about 5% input tokens per call (2,206 against 2,094). The full arm is cheaper per run ($0.00364 against $0.00441 and $0.00475) because it took fewer steps (149 against 181 and 183), mostly from the three `decoy-error` baseline runs that went to the 12-step limit, not because of the guardrail itself.
 - Three runs per case: counts with a per-repeat spread, not a statistical test. A one-run difference is noise.
 
+## CI eval gate
+
+Code: `scripts/ci_gate.py`, config `evals/ci-gate.yaml`, jobs `changes` and `eval-gate` in `.github/workflows/ci.yml`.
+
+**What runs.** 10 of the 40 tasks (5 standard, 4 free-form, 1 ambiguous) on `google/gemini-2.5-flash`, all of which passed in every earlier clean Gemini run (58 of 58). Pass 1 runs each task once (seed 0). If 3 or more fail, the gate fails at once; otherwise each failed task is rerun with seeds 1 and 2 and any failed rerun fails the gate. A run that hit an api error or a budget stop counts as failed. The gate catches a broken tool, prompt or grader, not a few points of drift on one task: that is the full eval's job.
+
+**When.** After the `test` job, on a pull request whose diff touches `src/**`, `evals/**`, `assumptions/**`, `scripts/run_eval.py`, `scripts/ci_gate.py`, `budgets.yaml`, `requirements.txt`, `pyproject.toml` or the workflow, and on `workflow_dispatch`. It is skipped otherwise (a skipped job, not a path filter on the workflow). It is not a required check. It uses the repository secret `OPENROUTER_API_KEY`, set only on the gate step.
+
+**Spend.** Phase `ci`, with `run_cap: 0.20`: `Guard(phase, run_cap=...)` uses the lower of `budgets.yaml`'s cap and `run_cap`, because the spend log starts empty on every runner and the key's own credit limit is the only cap across runs. A run costs about $0.045. The estimate cache (`estimate_cache: true`, `cache/estimates/`, kept with `actions/cache`) saves about 35 s, not money.
+
+**Exit codes.** 0 passed; 1 accuracy; 2 the run cap stopped a run; 3 the gate could not run: the secret is missing or malformed, the key check (`GET /api/v1/key`, `limit_remaining` and `effective_budget.remaining_usd`) fails, shows no limit or less than the run cap, a run's error says the key is out of credit or rejected, a crash, or the records are missing or don't match `runs.jsonl`. Each prints its own `::error::` line. Only dollar amounts and a status code are printed, never the key or the key check's reply (its `label` can hold part of the key).
+
+**Out of credit** (https://openrouter.ai/docs/api-reference/limits and https://openrouter.ai/docs/api-reference/errors). The docs give both codes for a key's own limit: a 402 whose `error.metadata.limit_source` is `openrouter_key_limit` or `openrouter_credits`, and a 403 "Budget limit exceeded" with `limit_source` `openrouter_key_limit`. The gate matches either, on the `limit_source`, in the failed run's error. A 402 with `limit_source` `openrouter_in_flight_budget` (sent with `Retry-After`) is transient and is an ordinary failed run.
+
 ## Still to build
 
 - A rule for what happens when `verify` fails: let the agent revise a limited number of times, then report the failure instead of answering.
