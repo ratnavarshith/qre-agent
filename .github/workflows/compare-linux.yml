@@ -6,8 +6,6 @@ name: Compare on Linux
 
 on:
   workflow_dispatch:
-  push:  # TEMPORARY: dispatch needs the file on the default branch; remove before merging
-    branches: [ci-linux-diff]
 
 permissions:
   contents: read
