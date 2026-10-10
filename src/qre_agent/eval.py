@@ -40,7 +40,14 @@ CATEGORIES = (
     "reference mismatch",  # right circuit and settings, numbers differ from results.json: the
     # toolchain changed since the comparison ran, so the grader's references are stale
 )
-FIELDS = ("physical_qubits", "runtime_ns", "physical_qubit_seconds", "t_count")
+# What a cited result must equal in results.json. Surface is deterministic: every field at the
+# suite's rel_tol. The bicycle compiler's measurement table is not (its search breaks ties in
+# HashMap order, so a regenerated table moves timesteps by about 1%): its timing and error
+# fields get BICYCLE_REL_TOL, while qubits, T and rotation counts and pass/fail stay exact.
+EXACT = ("physical_qubits", "t_count", "rotation_count", "passes")
+SURFACE_TIMED = ("runtime_ns", "physical_qubit_seconds", "error")
+BICYCLE_TIMED = ("timesteps", "runtime_ns", "physical_qubit_seconds", "error")
+BICYCLE_REL_TOL = 0.02  # the largest difference seen between two tables was 1.2%
 RERUN_KEYS = ("run_id", "stop_reason", "category", "reason")  # kept from a replaced run
 P_STRINGS = {1e-3: "1e-3", 1e-4: "1e-4"}  # how estimate_bicycle takes them
 
@@ -88,6 +95,23 @@ def load_suite(path=TASKS_PATH):
     suite["rows"] = results["rows"]
     suite["results_meta"] = results["meta"]
     return suite
+
+
+def reference_mismatches(cited, rows, rel_tol):
+    """Reasons the cited results differ from the results.json rows ({"surface": row, "bicycle":
+    row}): see EXACT, SURFACE_TIMED and BICYCLE_TIMED."""
+    reasons = []
+    for arch, row in rows.items():
+        timed, tol = (
+            (SURFACE_TIMED, rel_tol) if arch == "surface" else (BICYCLE_TIMED, BICYCLE_REL_TOL)
+        )
+        for field in EXACT:
+            if cited[arch][field] != row[field]:
+                reasons.append(f"{arch} {field} {cited[arch][field]}, results.json {row[field]}")
+        for field in timed:
+            if not math.isclose(cited[arch][field], row[field], rel_tol=tol):
+                reasons.append(f"{arch} {field} {cited[arch][field]}, results.json {row[field]}")
+    return reasons
 
 
 def expected_rows(suite, family, n, p, code):
@@ -243,13 +267,8 @@ def grade(task, toolbox, run, suite, last_message=None):
         if task["type"] != "free-form" and not failures:
             settings = {k: want.get(k, assumed.get(k)) for k in ("family", "n", "p", "code")}
             rows = expected_rows(suite, **settings)
-            for arch, row in (rows or {}).items():
-                for field in FIELDS:
-                    got = cited[arch][field]
-                    if not math.isclose(got, row[field], rel_tol=suite["rel_tol"]):
-                        fail(
-                            "reference mismatch", f"{arch} {field} {got}, results.json {row[field]}"
-                        )
+            for reason in reference_mismatches(cited, rows or {}, suite["rel_tol"]):
+                fail("reference mismatch", reason)
 
         for arch, r in cited.items():
             if not r["passes"] and not FAILS.search(summary):

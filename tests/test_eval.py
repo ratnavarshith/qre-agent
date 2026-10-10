@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 
 from qre_agent import eval as ev
@@ -259,3 +262,82 @@ def test_an_unparsed_answer_after_real_estimates_is_a_format_failure():
 
 def test_records_carry_the_grader_version():
     assert ev.GRADER_VERSION == 2
+
+
+# ---- the reference check: exact fields, and the bicycle fields that vary with the table ----
+
+
+def cited_rows(**changes):
+    """Copies of the qft-4, p = 1e-3, two-gross rows with `changes` ({"bicycle": {field: value}})."""
+    rows = ev.expected_rows(SUITE, "qft", 4, 1e-3, "two-gross")
+    cited = {arch: dict(row) for arch, row in rows.items()}
+    for arch, fields in changes.items():
+        cited[arch] |= fields
+    return rows, cited
+
+
+def scaled(arch, factor, *fields):
+    rows, _ = cited_rows()
+    return {arch: {f: rows[arch][f] * factor for f in fields}}
+
+
+def mismatches(**changes):
+    rows, cited = cited_rows(**changes)
+    return ev.reference_mismatches(cited, rows, SUITE["rel_tol"])
+
+
+def test_the_reference_rows_match_themselves():
+    assert mismatches() == []
+
+
+@pytest.mark.parametrize("factor", [1.015, 0.985, 1.0199])
+def test_bicycle_timing_and_error_may_differ_by_two_percent(factor):
+    fields = ("timesteps", "runtime_ns", "physical_qubit_seconds", "error")
+    assert mismatches(**scaled("bicycle", factor, *fields)) == []
+
+
+@pytest.mark.parametrize("field", ["timesteps", "runtime_ns", "physical_qubit_seconds", "error"])
+def test_bicycle_timing_and_error_beyond_two_percent_are_a_mismatch(field):
+    (reason,) = mismatches(**scaled("bicycle", 1.03, field))
+    assert reason.startswith(f"bicycle {field} ")
+
+
+@pytest.mark.parametrize("field", ["physical_qubits", "t_count", "rotation_count"])
+def test_bicycle_qubits_and_counts_are_exact(field):
+    (reason,) = mismatches(bicycle={field: cited_rows()[0]["bicycle"][field] + 1})
+    assert reason.startswith(f"bicycle {field} ")
+
+
+def test_pass_fail_is_exact():
+    (reason,) = mismatches(bicycle={"passes": not cited_rows()[0]["bicycle"]["passes"]})
+    assert reason.startswith("bicycle passes ")
+
+
+@pytest.mark.parametrize("field", ["runtime_ns", "physical_qubit_seconds", "error"])
+def test_surface_stays_at_the_suites_tolerance(field):
+    assert mismatches(**scaled("surface", 1.0 + 1e-9, field)) == []
+    (reason,) = mismatches(**scaled("surface", 1.001, field))  # well inside the bicycle's 2%
+    assert reason.startswith(f"surface {field} ")
+
+
+def test_the_other_platforms_rows_pass():
+    """The Linux runner's rows (its own measurement tables: bicycle runtime up to 1.2% off,
+    automorphism counts up to 6.6%) against the committed ones, on every row pair."""
+    linux = Path(__file__).parent / "data" / "comparison-linux.json"
+    rows = {
+        (r["family"], r["n"], r["p"], r["arch"]): r
+        for r in json.loads(linux.read_text("utf-8"))["rows"]
+    }
+    committed = {(r["family"], r["n"], r["p"], r["arch"]): r for r in SUITE["rows"]}
+    checked = 0
+    for (family, n, p, arch), bicycle in rows.items():
+        if arch == "surface":
+            continue
+        pair = {"surface": rows[family, n, p, "surface"], "bicycle": bicycle}
+        want = {
+            "surface": committed[family, n, p, "surface"],
+            "bicycle": committed[family, n, p, arch],
+        }
+        assert ev.reference_mismatches(pair, want, SUITE["rel_tol"]) == [], (family, n, p, arch)
+        checked += 1
+    assert checked == 92  # 88 of them differ from the committed rows
