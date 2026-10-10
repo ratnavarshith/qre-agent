@@ -56,7 +56,16 @@ POLICIES = {  # name -> the primary's cost up to the switch, or None when its ru
     "e. Gemini, to Sonnet when its first tool call is build_circuit": (
         lambda p: p["cost_to_first_tool"] if p["first_build"] else None
     ),
+    "f. e, and escalate the rest if verify fails": (
+        lambda p: (
+            p["cost_to_first_tool"]
+            if p["first_build"]
+            else (None if p["verified"] else p["cost_usd"])
+        )
+    ),
 }
+STRONG_ONLY = "b. Sonnet only"
+PRIMARY_ONLY = "a. Gemini only"
 
 
 def simulate(policy, primary, strong):
@@ -100,13 +109,10 @@ def usd(values):
     return spread(values, 1, "$", 4)
 
 
-def frontier(results):
+def frontier(results, passes=None):
     """Policies no other policy beats on mean accuracy and mean cost (at least as good on both,
-    better on one)."""
-    means = {
-        name: (statistics.mean(p[0] for p in ps), statistics.mean(p[2] for p in ps))
-        for name, ps in results.items()
-    }
+    better on one), over `passes` (indices; None: all)."""
+    means = mean_points(results, passes)
     return [
         n
         for n, (acc, cost) in means.items()
@@ -116,6 +122,24 @@ def frontier(results):
             if m != n
         )
     ]
+
+
+def mean_points(results, passes=None):
+    """name -> (mean accuracy, mean cost per task) over `passes` (None: all)."""
+    means = {}
+    for name, ps in results.items():
+        ps = ps if passes is None else [ps[i] for i in passes]
+        means[name] = (statistics.mean(p[0] for p in ps), statistics.mean(p[2] for p in ps))
+    return means
+
+
+def select(results, passes, max_gap):
+    """The frontier policy over `passes` with the most accuracy per dollar among those at most
+    `max_gap` (a fraction) below the strong model alone."""
+    means = mean_points(results, passes)
+    floor = means[STRONG_ONLY][0] - max_gap - 1e-9
+    ok = [n for n in frontier(results, passes) if means[n][0] >= floor]
+    return max(ok, key=lambda n: means[n][0] / means[n][1]), means
 
 
 def main():
@@ -128,6 +152,9 @@ def main():
         raise ValueError("the two evals have different tasks or passes")
     results = {name: simulate(policy, primary, strong) for name, policy in POLICIES.items()}
     on_frontier = frontier(results)
+    held = cfg["held_out"]
+    design, test = held["design_passes"], held["test_pass"]
+    chosen, design_means = select(results, design, held["max_gap_points"] / 100)
 
     out = REPO_ROOT / cfg["results_dir"]
     out.mkdir(parents=True, exist_ok=True)
@@ -152,7 +179,15 @@ def main():
             "Sonnet's whole run (a fresh start). Costs are ours (`budgets.yaml` prices, as in "
             "the eval). Values are mean ± sample standard deviation across the passes "
             "(min–max). Unlike the eval summary, Gemini's one api-error run counts as a "
-            "failure (escalated by c and d)."
+            "failure (escalated by c, d and f)."
+        ),
+        "",
+        (
+            "**The policies were designed on this eval's data.** All six rules were written "
+            "after reading these runs (the build_circuit signal comes from Gemini's failures on "
+            "the free-form tasks here), so the table below is in-sample and flatters them. The "
+            "held-out check further down only holds out a pass, not tasks: the same 40 tasks "
+            "appear in every pass, so it measures run-to-run noise, not new kinds of task."
         ),
         "",
         "| policy | correct | cost per task | escalated | frontier |",
@@ -176,10 +211,45 @@ def main():
             "(after its one retry; no answer and api errors included) and pays Gemini's whole "
             "run; d also escalates any run that called build_circuit, paying the whole run; e "
             "switches as soon as Gemini's first tool call is build_circuit and pays only the LLM "
-            "calls up to that one."
+            "calls up to that one; f is e, and escalates every other run whose final verify "
+            "did not pass, paying its whole run."
         ),
         "",
+        "## Held-out pass",
+        "",
+        (
+            f"Chosen on passes {', '.join(map(str, design))} only: of the policies on the "
+            f"frontier over those passes, those with mean accuracy at most "
+            f"{held['max_gap_points']} points below Sonnet only, and of those the most accuracy "
+            "per dollar (mean accuracy / mean cost per task)."
+        ),
+        "",
+        (
+            f"| policy (passes {', '.join(map(str, design))}) | correct | cost per task "
+            "| correct per $ | eligible |"
+        ),
+        "|---|---|---|---|---|",
     ]
+    eligible_floor = design_means[STRONG_ONLY][0] - held["max_gap_points"] / 100 - 1e-9
+    design_frontier = frontier(results, design)
+    for name, (acc, c) in design_means.items():
+        tag = (
+            "**chosen**"
+            if name == chosen
+            else ("yes" if name in design_frontier and acc >= eligible_floor else "")
+        )
+        lines.append(f"| {name} | {100 * acc:.1f}% | ${c:.4f} | {acc / c:.0f} | {tag} |")
+    lines += [
+        "",
+        f"Pass {test} alone (one pass: no spread):",
+        "",
+        "| policy | correct | cost per task | escalated |",
+        "|---|---|---|---|",
+    ]
+    for name in (chosen, STRONG_ONLY, PRIMARY_ONLY):
+        acc, _, c, e = results[name][test]
+        lines.append(f"| {name} | {100 * acc:.1f}% | ${c:.4f} | {100 * e:.0f}% |")
+    lines += [""]
     (out / "summary.md").write_text("\n".join(lines), encoding="utf-8")
     print("\n".join(lines))
 

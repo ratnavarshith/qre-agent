@@ -6,3 +6,7 @@
 primary: results/eval/google_gemini-2.5-flash/2026-10-09/runs-v2.jsonl
 strong: results/eval/anthropic_claude-sonnet-5/2026-10-09/runs-v2.jsonl
 results_dir: results/phase3/routing
+held_out:  # choose a policy on some passes, report it on another
+  design_passes: [0, 1]  # indices into the passes (repeats)
+  test_pass: 2
+  max_gap_points: 5  # at most this many points of mean accuracy below Sonnet only
