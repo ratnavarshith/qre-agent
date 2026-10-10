@@ -25,6 +25,7 @@ RUNS_DIR = REPO_ROOT / "runs"
 MAX_STEPS = 12
 MAX_TOKENS = 4096
 VERIFY_RETRIES = 1  # times a failed automatic verify goes back to the agent
+SWITCHED = "switched: first tool call is build_circuit"  # stop_reason of a run routing ended
 FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
 
 SYSTEM = """\
@@ -117,11 +118,13 @@ def llm_failure(model, error, latency):
     return attributes
 
 
-def tool_attributes(result, latency):
+def tool_attributes(result, latency, cache_hit=None):
     """Span attributes of a tool call. A failed call's output is {"error": "<Exception>: ..."}
     (estimates have a numeric `error`, the logical error); error.type is the exception name."""
     out = json.loads(result)
     attributes = {"latency_s": latency}
+    if cache_hit is not None:
+        attributes["cache_hit"] = cache_hit
     if list(out) == ["error"]:
         bad_json = out["error"].startswith("arguments are not valid JSON")
         attributes["error.type"] = "JSONDecodeError" if bad_json else out["error"].split(":")[0]
@@ -208,8 +211,13 @@ def run(
     runs_dir=RUNS_DIR,
     verify_retries=VERIFY_RETRIES,
     otel=True,
+    switch_on_first_build=False,
+    routing=None,
 ):
-    """`otel`: also write the OpenTelemetry trace to <runs_dir>/otel/<run_id>.jsonl."""
+    """`otel`: also write the OpenTelemetry trace to <runs_dir>/otel/<run_id>.jsonl.
+    `switch_on_first_build`: stop, with stop_reason SWITCHED, when the run's first tool call is
+    build_circuit, before running it (cost routing, routing.py). `routing`: a dict that goes into
+    the meta record and onto the root span as routing.<key> attributes."""
     toolbox = toolbox or Toolbox()
     toolbox.prompt = task
     trace_path = Path(runs_dir) / f"{run_id}.jsonl"
@@ -229,7 +237,8 @@ def run(
     tracer = spans.get_tracer(__name__) if spans else tracing.NO_OP
     root = tracer.start_span(
         "agent_run",
-        attributes={"run_id": run_id, "gen_ai.request.model": model, "phase": guard.phase or ""},
+        attributes={"run_id": run_id, "gen_ai.request.model": model, "phase": guard.phase or ""}
+        | {f"routing.{k}": v for k, v in (routing or {}).items() if v is not None},
     )
     attached = context.attach(trace.set_span_in_context(root))
 
@@ -250,6 +259,7 @@ def run(
             seed=getattr(client, "seed", None),
             tools=[s["name"] for s in SCHEMAS],
             assumptions=toolbox.assumptions.as_dict(),
+            **({"routing": routing} if routing else {}),
             **environment(toolbox.assumptions),
         )
         messages = [
@@ -260,7 +270,7 @@ def run(
             log("message", message=m)
 
         answer = verification = None
-        stop_reason, steps, verifications = "step_limit", 0, []
+        stop_reason, steps, verifications, tools_called = "step_limit", 0, [], False
         try:
             while steps < max_steps:
                 steps += 1
@@ -315,6 +325,15 @@ def run(
                 )
 
                 calls = message.get("tool_calls") or []
+                if (
+                    switch_on_first_build
+                    and calls
+                    and not tools_called
+                    and calls[0]["function"]["name"] == "build_circuit"
+                ):
+                    stop_reason = SWITCHED
+                    break
+                tools_called = tools_called or bool(calls)
                 for call in calls:
                     start = time.perf_counter()
                     name = call["function"]["name"]
@@ -327,7 +346,7 @@ def run(
                             arguments = call["function"]["arguments"]
                             result = json.dumps({"error": f"arguments are not valid JSON: {e}"})
                         tool_s = time.perf_counter() - start
-                        span.set_attributes(tool_attributes(result, tool_s))
+                        span.set_attributes(tool_attributes(result, tool_s, toolbox.cache_hit))
                     totals["tool_s"] += tool_s
                     messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
                     log(
@@ -338,6 +357,7 @@ def run(
                         arguments=arguments,
                         result=json.loads(result),
                         latency_s=tool_s,
+                        **({} if toolbox.cache_hit is None else {"cache_hit": toolbox.cache_hit}),
                     )
                 if calls:
                     continue
@@ -390,6 +410,11 @@ def run(
                 verify_passed_first_try=first_try,
                 verify_passed_after_retry=after_retry,
                 totals=totals,
+                **(
+                    {"cache": {"hits": toolbox.cache_hits, "misses": toolbox.cache_misses}}
+                    if toolbox.cache
+                    else {}
+                ),
             )
             root.set_attributes(
                 {

@@ -295,9 +295,12 @@ class Toolbox:
         self.prompt = prompt
         self.timeout = timeout
         self.cache = cache
+        self.cache_hit = None  # whether the last call's estimate was a cache hit (None: no cache)
+        self.cache_hits = self.cache_misses = 0  # this session's estimates
         self.circuits, self.results, self.outputs = {}, {}, []
 
     def call(self, name, arguments):
+        self.cache_hit = None
         try:
             if name not in TOOLS:
                 raise ValueError(f"unknown tool {name!r}")
@@ -311,7 +314,9 @@ class Toolbox:
         if self.cache is not None:
             key = cache_key(kind, circuit, a)
             if (hit := self.cache.get(key)) is not None:
+                self.cache_hit, self.cache_hits = True, self.cache_hits + 1
                 return hit
+            self.cache_hit, self.cache_misses = False, self.cache_misses + 1
         if self.timeout is None:
             r = fn(circuit, a)
         else:

@@ -221,6 +221,21 @@ Each run has its own tracer provider, not the global one. `runs/<run_id>.jsonl` 
 
 **Fallback check** (`evals/phase3-fallback.yaml`; results in `results/phase3/fallback/2026-10-10/`: all 45 calls answered by Haiku, 9 of 10 runs correct). 10 tasks (5 standard, 3 free-form, 2 ambiguous, listed in the config) with the primary forced 100% down (`injection_rates: [1.0]`), reliability on, and the fallback not injected (`fallback_injection_rate: 0`), so every call has to be answered by `claude-haiku-4-5` over Anthropic's API, from the first call of the run. It is the only test of the Anthropic client against the real API, and of a conversation that never saw the primary. Same runner and summary (results in `results/phase3/fallback/<date>/`); its last column, "answered by fallback", counts the replies the fallback gave against all replies, and the summary lists the answering models. Each LLM call costs the primary's four failed attempts in injected sleeps (backoff plus the 1 s Retry-After of injected 429s, about 4 s on average), and no money.
 
+## Cost routing
+
+Phase 3, step 2. Code: `src/qre_agent/routing.py`; the offline design is in `results/phase3/routing/summary.md` (`scripts/routing_sim.py`).
+
+**Policy f** (`routing.run_routed`). A task starts on the primary (gemini-2.5-flash) and restarts from scratch on the strong model (claude-sonnet-5, a fresh session: its own `Toolbox`, no messages from the first leg) when:
+- `first_build`: the primary's first tool call of the run is `build_circuit`. `agent.run(..., switch_on_first_build=True)` stops right after that LLM call, before the tool runs (`stop_reason` `switched: first tool call is build_circuit`), so only that one call is paid for. A `build_circuit` after another tool call doesn't switch;
+- `verify_failed`: the final answer failed verify, after the agent's own retry (`VERIFY_RETRIES`);
+- `no_answer`: no answer within the step limit;
+- `primary_error`: the primary's run raised (an api error that the retry layer, when on, didn't absorb).
+A budget refusal (`BudgetError`) ends the task on the leg that was refused, with no escalation. The checks are tried in that order, and the strong model's answer is final: it isn't checked again.
+
+**Traces.** Each leg is a normal run. The primary is `<run_id>`, the strong leg `<run_id>-escalated`; the answering leg's trace is the one that is graded and replayed. Its last line is a `routing` record: `policy`, `primary_model`, `strong_model`, `escalated`, `reason`, `answered_by`, `primary_run_id`, `escalated_run_id`, `cost_before_switch_usd` (the primary's whole leg), `cost_after_switch_usd` (the strong leg, 0 without escalation), `cost_usd` (both) and the session's `cache_hits` and `cache_misses`. The strong leg's `meta` record and root span (`routing.*` attributes) also say it was escalated, from which run, why and what the primary had cost. `Run.steps` and `Run.totals` of a routed run are summed over both legs.
+
+**Estimate cache in the trace.** With a cache on the `Toolbox`, each estimate's `tool_call` record has `cache_hit` (true or false), the span has the `cache_hit` attribute, and the `final` record has `cache: {hits, misses}` for the session. Records of tools that aren't cached, and runs without a cache, are unchanged.
+
 ## Still to build
 
 - A rule for what happens when `verify` fails: let the agent revise a limited number of times, then report the failure instead of answering.
