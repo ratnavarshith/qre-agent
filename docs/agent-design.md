@@ -115,7 +115,7 @@ Each run writes `runs/<run_id>.jsonl`: a `meta` record (task, model, limits, see
 
 The eval grader sorts tasks into two types.
 
-**Benchmark tasks** name one of the families in `circuits.py`: QFT, phase estimation, transverse-field Ising model, ripple-carry adder, Grover search. The system prompt tells the agent to use `build_benchmark` for them, so the circuit is ours and the estimates are deterministic. A run is correct when:
+**Benchmark tasks** name one of the families in `circuits.py`: QFT, phase estimation, transverse-field Ising model, ripple-carry adder, Grover search. The system prompt tells the agent to use `build_benchmark` for them, so the circuit is ours and the estimates are deterministic. Since the four-model eval, it says to use it only when the task's circuit is exactly the benchmark (same algorithm, variant and qubit layout) and to write anything else with `build_circuit`. The old rule ("whenever the task names one of these families") led every model to the benchmark adder for `ff-adder-interleaved-4`, an adder on another layout (0/12 runs); that failure stands, because it was a real error under the old prompt. Evals run with the new prompt aren't directly comparable with that one on free-form tasks. A run is correct when:
 - it called `build_benchmark` with the right family and size;
 - the results the answer cites equal the reference row in `results/comparison` (same p, budget and bicycle code) exactly: physical qubits, runtime and qubit-seconds;
 - `verify` passes;

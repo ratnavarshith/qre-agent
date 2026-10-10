@@ -131,7 +131,8 @@ SCHEMAS = [
         "name": "build_benchmark",
         "description": (
             "Build a standard benchmark circuit, with measurements, and return its circuit_id and "
-            "a summary. Use it whenever the task names one of these families: "
+            "a summary. Use it only when the task's circuit is exactly one of these, including the "
+            "layout; otherwise write the circuit with build_circuit: "
             + "; ".join(f"{k}: {v}" for k, v in BENCHMARKS.items())
             + ". QFT and QPE above n = 20 hit the bicycle path's angle tolerance."
         ),

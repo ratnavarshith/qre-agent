@@ -273,12 +273,19 @@ def test_build_benchmark_errors(args, error):
     assert error in json.loads(Toolbox().call("build_benchmark", args))["error"]
 
 
-def test_system_prompt_points_named_families_to_build_benchmark():
+def test_build_benchmark_is_only_for_an_exact_match():
+    # In the eval every model used the benchmark adder for an adder on another layout (0/12),
+    # following the old rule "whenever the task names one of these families".
     from qre_agent.agent import system_prompt
     from qre_agent.assumptions import load_assumptions
 
-    text = system_prompt(load_assumptions())
-    assert "build_benchmark" in text and "ripple-carry adder" in text
+    text = " ".join(system_prompt(load_assumptions()).split())
+    description = next(s["description"] for s in SCHEMAS if s["name"] == "build_benchmark")
+    for t in (text, description):
+        assert "only when the task's circuit is exactly" in t
+        assert "Whenever the task names" not in t and "whenever the task names" not in t
+    assert "otherwise write it with build_circuit" in text
+    assert "layout" in text and "ripple-carry adder" in text
 
 
 def test_sandbox_runs_code_with_non_ascii_characters():
