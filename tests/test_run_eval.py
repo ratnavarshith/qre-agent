@@ -289,3 +289,31 @@ def test_routing_needs_a_known_policy_and_a_strong_model(run_eval):
         run_eval.routed({"routing": "g"})
     with pytest.raises(SystemExit, match="strong_model"):
         run_eval.routed({"routing": "f"})
+
+
+def test_estimate_cache_flag_caches_a_plain_eval_and_records_hits(run_eval, tmp_path, monkeypatch):
+    monkeypatch.setattr(run_eval, "OpenRouter", Scripted)
+    monkeypatch.setattr(run_eval, "EstimateCache", lambda: EstimateCache(tmp_path / "estimates"))
+    Scripted.failures = 0
+    budgets = tmp_path / "budgets.yaml"
+    prices = {"fake": {"input": 1.0, "output": 2.0}}
+    budgets.write_text(yaml.safe_dump({"caps": {"eval": 1}, "prices": prices}))
+    guard = Guard("eval", budgets, tmp_path / "spend.jsonl")
+    cfg = {"model": "fake", "phase": "eval", "tasks": "evals/tasks.yaml", "runs": 2, "seed": 0,
+           "max_steps": 6, "max_tokens": 100, "estimate_cache": True,
+           "stop": {"cost_factor": 100, "api_error_rate": 1.0, "min_runs": 10}}  # fmt: skip
+    config = tmp_path / "config.yaml"
+    config.write_text(yaml.safe_dump(cfg))
+    suite = run_eval.load_suite(run_eval.REPO_ROOT / cfg["tasks"])
+    tasks = [t for t in suite["tasks"] if t["id"] == TASK]
+
+    assert run_eval.run_eval(config, cfg, tasks, suite, guard, expected=1.0) is None
+    (out,) = (tmp_path / "eval" / "fake").iterdir()
+    first, second = [json.loads(x) for x in (out / "runs.jsonl").read_text("utf-8").splitlines()]
+    assert first["correct"] and second["correct"]
+    assert first["cache"] == {"hits": 0, "misses": 2}
+    assert second["cache"] == {"hits": 2, "misses": 0}  # the same estimates, served from disk
+
+    cfg["estimate_cache"] = False  # off by default: nothing is stored or recorded
+    off = run_eval.run_one(cfg, tasks[0], 0, "off-r0", Scripted(), guard, suite)[0]
+    assert "cache" not in off

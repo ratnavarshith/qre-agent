@@ -140,7 +140,8 @@ def make_client(cfg, seed, pacer):
 def run_one(cfg, task, repeat, run_id, client, guard, suite, rerun_of=None):
     """One graded run. Returns its runs.jsonl record and why the budget guard refused a call, if
     it did."""
-    toolbox, refused, routing = Toolbox(), None, None
+    cached = cfg.get("estimate_cache") and not routed(cfg)  # a routed eval always caches
+    toolbox, refused, routing = Toolbox(cache=EstimateCache() if cached else None), None, None
     pacer = getattr(client[1] if routed(cfg) else client, "pacer", None)
     waited = pacer.waited if pacer else 0.0
     start = time.perf_counter()
@@ -168,6 +169,8 @@ def run_one(cfg, task, repeat, run_id, client, guard, suite, rerun_of=None):
     rec = record(task, toolbox, result, grading, model, seed, repeat, wall, rerun_of, paced)
     if routing:
         rec["routing"] = routing
+    if cached:
+        rec["cache"] = {"hits": toolbox.cache_hits, "misses": toolbox.cache_misses}
     note = f", escalated ({routing['reason']})" if routing and routing["escalated"] else ""
     print(f"r{repeat} {task['id']}: {'correct' if rec['correct'] else rec['category']}, "
           f"steps {rec['steps']}, ${rec['cost_usd']:.5f}, {wall:.0f} s{note}")  # fmt: skip
