@@ -38,6 +38,7 @@ CATEGORIES = (
     # toolchain changed since the comparison ran, so the grader's references are stale
 )
 FIELDS = ("physical_qubits", "runtime_ns", "physical_qubit_seconds", "t_count")
+RERUN_KEYS = ("run_id", "stop_reason", "category", "reason")  # kept from a replaced run
 P_STRINGS = {1e-3: "1e-3", 1e-4: "1e-4"}  # how estimate_bicycle takes them
 
 # Physical error rates as written: 1e-3, 1.0e-03, 1 × 10^-3, 10^{-3}, 10⁻³, 0.001, 0.1%.
@@ -296,7 +297,8 @@ def run_from_trace(run_id, path):
 
 
 def record(task, toolbox, run, grading, model, seed, repeat, wall_s, rerun_of=None, paced=0.0):
-    """One line of runs.jsonl. `rerun_of` is the earlier api-error record this run replaces;
+    """One line of runs.jsonl. `rerun_of` is the earlier record this run replaces (with a
+    `reason` when it wasn't rerun for an api error);
     `paced` is the time the request pacer made it wait, which is left out of the latencies."""
     t = run.totals
     return {
@@ -326,13 +328,23 @@ def record(task, toolbox, run, grading, model, seed, repeat, wall_s, rerun_of=No
         "paced_wait_s": paced,
         "llm_s": t.get("llm_s", 0.0) - paced,
         "tool_s": t.get("tool_s", 0.0),
-    } | ({"rerun_of": {k: rerun_of[k] for k in ("run_id", "stop_reason")}} if rerun_of else {})
+    } | ({"rerun_of": {k: rerun_of[k] for k in RERUN_KEYS if k in rerun_of}} if rerun_of else {})
+
+
+def _api_error(stop_reason):
+    return stop_reason.startswith("error") and "BudgetError" not in stop_reason
 
 
 def api_error_counts(records):
     """(runs that were api errors on the first attempt, runs that still are): a rerun record
-    carries `rerun_of`, the first attempt it replaced."""
-    first = sum(r["category"] == "api error" or "rerun_of" in r for r in records)
+    carries `rerun_of`, the first attempt it replaced, which may have been rerun for another
+    reason."""
+    first = sum(
+        _api_error(r["rerun_of"]["stop_reason"])
+        if "rerun_of" in r
+        else r["category"] == "api error"
+        for r in records
+    )
     return first, sum(r["category"] == "api error" for r in records)
 
 

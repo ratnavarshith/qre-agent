@@ -94,7 +94,8 @@ def test_api_errors_are_recorded_then_rerun_once(run_eval, tmp_path, monkeypatch
     assert [json.loads(line)["category"] for line in first] == ["api error", None]
     summary = (out / "summary.md").read_text("utf-8")
     assert "1 of 2 runs on the first attempt, 0 after rerunning" in summary
-    assert json.loads((out / "meta.json").read_text("utf-8"))["reruns"]["runs"] == 1
+    (event,) = json.loads((out / "meta.json").read_text("utf-8"))["reruns"]
+    assert (event["reason"], event["runs"]) == ("api error", [[TASK, 0]])
 
     assert run_eval.rerun_errors(out, guard) is None  # nothing left to rerun
     assert (out / "runs.jsonl").read_text("utf-8").count("\n") == 2
@@ -154,3 +155,35 @@ def test_max_rpm_paces_calls_and_keeps_the_wait_out_of_the_latency(run_eval, tmp
     assert first["paced_wait_s"] == 4.0  # 3 calls: the first goes at once, two wait 2 s
     assert second["paced_wait_s"] == 6.0  # the pacer is shared: this run's first call waits too
     assert first["category"] is None and second["category"] is None
+
+
+def test_selected_runs_are_rerun_with_the_reason_recorded(run_eval, tmp_path, monkeypatch):
+    monkeypatch.setattr(run_eval, "OpenRouter", Scripted)
+    Scripted.failures = 0
+    budgets = tmp_path / "budgets.yaml"
+    prices = {"fake": {"input": 1.0, "output": 2.0}}
+    budgets.write_text(yaml.safe_dump({"caps": {"eval": 1}, "prices": prices}))
+    guard = Guard("eval", budgets, tmp_path / "spend.jsonl")
+    cfg = {"model": "fake", "phase": "eval", "tasks": "evals/tasks.yaml", "runs": 2, "seed": 0,
+           "max_steps": 6, "max_tokens": 100,
+           "stop": {"cost_factor": 100, "api_error_rate": 1.0, "min_runs": 10}}  # fmt: skip
+    config = tmp_path / "config.yaml"
+    config.write_text(yaml.safe_dump(cfg))
+    suite = run_eval.load_suite(run_eval.REPO_ROOT / cfg["tasks"])
+    tasks = [t for t in suite["tasks"] if t["id"] == TASK]
+    run_eval.run_eval(config, cfg, tasks, suite, guard, expected=1.0)
+    (out,) = (tmp_path / "eval" / "fake").iterdir()
+    before = [json.loads(line) for line in (out / "runs.jsonl").read_text("utf-8").splitlines()]
+
+    assert run_eval.rerun(out, guard, {(TASK, 1)}, "harness bug") is None
+    after = [json.loads(line) for line in (out / "runs.jsonl").read_text("utf-8").splitlines()]
+    assert after[0] == before[0]
+    assert after[1]["rerun_of"] == {"run_id": before[1]["run_id"], "stop_reason": "answered",
+                                    "category": None, "reason": "harness bug"}  # fmt: skip
+    assert after[1]["seed"] == 1 and after[1]["run_id"].endswith("-r1-rerun")
+    meta = json.loads((out / "meta.json").read_text("utf-8"))
+    assert meta["reruns"][-1]["reason"] == "harness bug"
+    assert meta["reruns"][-1]["runs"] == [[TASK, 1]]
+    assert "0 of 2 runs on the first attempt, 0 after" in (out / "summary.md").read_text("utf-8")
+    with pytest.raises(SystemExit, match="not in this eval"):
+        run_eval.rerun(out, guard, {("no-such-task", 0)}, "x")

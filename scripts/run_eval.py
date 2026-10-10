@@ -5,6 +5,7 @@ summary.md. Traces go to runs/<run_id>.jsonl. Spend phase: the config's (eval).
   .venv/Scripts/python scripts/run_eval.py evals/pilot.yaml --estimate   # cost, no API calls
   .venv/Scripts/python scripts/run_eval.py evals/pilot.yaml
   .venv/Scripts/python scripts/run_eval.py --rerun-errors results/eval/<model>/<date>  # api errors, once
+  .venv/Scripts/python scripts/run_eval.py --rerun DIR --runs TASK:REPEAT ... --reason TEXT
   .venv/Scripts/python scripts/run_eval.py --summarize results/eval/<model>/<date>  # redo summary.md
   .venv/Scripts/python scripts/run_eval.py --self-test   # grader self-test, no API calls
 """
@@ -155,10 +156,11 @@ def run_eval(config_path, cfg, tasks, suite, guard, expected):
     return stopped
 
 
-def rerun_errors(path, guard):
-    """Reruns once each run of the eval in `path` that was an api error (same task, repeat and
-    seed), replaces it in runs.jsonl and rewrites summary.md. The first attempts stay in
-    runs-first-attempt.jsonl. Returns the reason it stopped early, or None."""
+def rerun(path, guard, runs, reason):
+    """Reruns once each (task, repeat) in `runs` of the eval in `path` (same seed), replaces it in
+    runs.jsonl, records `reason` in the new record's `rerun_of` and in meta.json, and rewrites
+    summary.md. The first attempts stay in runs-first-attempt.jsonl. Returns the reason it
+    stopped early, or None."""
     path = Path(path)
     cfg = yaml.safe_load((path / "config.yaml").read_text(encoding="utf-8"))
     meta = json.loads((path / "meta.json").read_text(encoding="utf-8"))
@@ -167,30 +169,46 @@ def rerun_errors(path, guard):
         raise SystemExit("the task file changed since this eval ran; not rerunning")
     lines = (path / "runs.jsonl").read_text(encoding="utf-8").splitlines()
     records = [json.loads(line) for line in lines]
+    if missing := set(runs) - {(r["task"], r["repeat"]) for r in records}:
+        raise SystemExit(f"runs not in this eval: {sorted(missing)}")
     first = path / "runs-first-attempt.jsonl"
     if not first.exists():
         first.write_text("\n".join(lines) + "\n", encoding="utf-8")
     tasks = {t["id"]: t for t in suite["tasks"]}
-    todo = [r for r in records if r["category"] == "api error" and "rerun_of" not in r]
-    print(f"{len(todo)} api-error runs of {len(records)} to rerun once")
+    todo = [r for r in records if (r["task"], r["repeat"]) in runs]
+    print(f"{len(todo)} runs of {len(records)} to rerun once ({reason})")
     stamp, reruns, stopped = time.strftime("%Y%m%d-%H%M%S"), [], None
     pacer = Pacer(cfg["max_rpm"]) if cfg.get("max_rpm") else None
     for old in todo:
         client = make_client(cfg, old["seed"], pacer)
         run_id = f"eval-{stamp}-{old['task']}-r{old['repeat']}-rerun"
+        rerun_of = old | {"reason": reason}
         rec, stopped = run_one(cfg, tasks[old["task"]], old["repeat"], run_id, client, guard,
-                               suite, old)  # fmt: skip
+                               suite, rerun_of)  # fmt: skip
         reruns.append(rec)
         if stopped:
             break
     records = replace_reruns(records, reruns)
-    meta["reruns"] = {"date": time.strftime("%Y-%m-%d %H:%M:%S %z"), "git": git_state(),
-                      "runs": len(reruns)}  # fmt: skip
+    events = meta.get("reruns", [])
+    events = [events] if isinstance(events, dict) else events  # one dict before reasons existed
+    events.append({"date": time.strftime("%Y-%m-%d %H:%M:%S %z"), "git": git_state(),
+                   "reason": reason, "runs": [[r["task"], r["repeat"]] for r in reruns]})  # fmt: skip
+    meta["reruns"] = events
     (path / "runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records), "utf-8")
     (path / "meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
     (path / "summary.md").write_text(summarize(records, meta), encoding="utf-8")
     print(f"rewrote {path / 'runs.jsonl'} and summary.md")
     return stopped
+
+
+def rerun_errors(path, guard):
+    """Reruns once each run of the eval in `path` that was an api error and not yet rerun."""
+    records = [
+        json.loads(line) for line in (Path(path) / "runs.jsonl").read_text("utf-8").splitlines()
+    ]
+    runs = {(r["task"], r["repeat"]) for r in records
+            if r["category"] == "api error" and "rerun_of" not in r}  # fmt: skip
+    return rerun(path, guard, runs, "api error")
 
 
 def resummarize(path):
@@ -246,11 +264,22 @@ def main():
     parser.add_argument("config", nargs="?")
     parser.add_argument("--estimate", action="store_true", help="print the cost and stop")
     parser.add_argument("--rerun-errors", metavar="DIR", help="rerun DIR's api-error runs once")
+    parser.add_argument("--rerun", metavar="DIR", help="rerun the --runs of DIR once")
+    parser.add_argument("--runs", nargs="+", metavar="TASK:REPEAT", help="runs for --rerun")
+    parser.add_argument("--reason", help="why the --runs are rerun (recorded)")
     parser.add_argument("--summarize", metavar="DIR", help="rewrite DIR/summary.md")
     parser.add_argument("--self-test", action="store_true", help="test the grader, no API calls")
     args = parser.parse_args()
     if args.summarize:
         return resummarize(args.summarize)
+    if args.rerun:
+        if not (args.runs and args.reason):
+            parser.error("--rerun needs --runs and --reason")
+        runs = {(task, int(repeat)) for task, repeat in (r.rsplit(":", 1) for r in args.runs)}
+        if stopped := rerun(args.rerun, Guard("eval"), runs, args.reason):
+            print(f"STOPPED: {stopped}", file=sys.stderr)
+            raise SystemExit(2)
+        return
     if args.rerun_errors:
         if stopped := rerun_errors(args.rerun_errors, Guard("eval")):
             print(f"STOPPED: {stopped}", file=sys.stderr)

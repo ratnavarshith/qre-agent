@@ -185,8 +185,16 @@ def test_api_errors_are_counted_on_the_first_attempt_and_after_the_rerun():
     first = [rec(0.0, "api error") | {"task": "a", "repeat": 0}, rec() | {"task": "b", "repeat": 0}]
     first += [rec(0.0, "api error") | {"task": "c", "repeat": 0}]
     assert ev.api_error_counts(first) == (2, 2)
-    rerun_a = rec() | {"task": "a", "repeat": 0, "rerun_of": {"run_id": "x"}}
-    rerun_c = rec(0.0, "api error") | {"task": "c", "repeat": 0, "rerun_of": {"run_id": "y"}}
+    rerun_a = rec() | {
+        "task": "a",
+        "repeat": 0,
+        "rerun_of": {"run_id": "x", "stop_reason": "error: RuntimeError: 502"},
+    }
+    rerun_c = rec(0.0, "api error") | {
+        "task": "c",
+        "repeat": 0,
+        "rerun_of": {"run_id": "y", "stop_reason": "error: RuntimeError: 502"},
+    }
     merged = ev.replace_reruns(first, [rerun_a, rerun_c])
     assert [r["task"] for r in merged] == ["a", "b", "c"]  # same order
     assert merged[0] is rerun_a and merged[2] is rerun_c and merged[1] is first[1]
@@ -203,7 +211,9 @@ def test_summary_reports_the_api_error_baseline():
         "correct": False,
         "failures": [{"category": "api error", "reason": "502"}],
     }
-    rs[0] = rs[0] | {"rerun_of": {"run_id": "x"}}  # rerun succeeded
+    rs[0] = rs[0] | {
+        "rerun_of": {"run_id": "x", "stop_reason": "error: RuntimeError: 502"}
+    }  # rerun succeeded
     rs[1] = rs[1] | err
     text = ev.summarize(rs, meta)
     assert "API errors (no retries): 2 of 4 runs on the first attempt, 1 after rerunning" in text
@@ -224,3 +234,13 @@ def test_record_leaves_the_pacer_wait_out_of_the_latencies():
     assert (r["latency_s"], r["llm_s"], r["paced_wait_s"]) == (12.0, 4.0, 8.0)
     r = ev.record(task, SimpleNamespace(outputs=[]), run, grading, "m", 0, 0, wall_s=20.0)
     assert (r["latency_s"], r["llm_s"], r["paced_wait_s"]) == (20.0, 12.0, 0.0)
+
+
+def test_a_rerun_for_another_reason_is_not_an_api_error():
+    fixed = rec() | {"task": "a", "repeat": 0}
+    fixed["rerun_of"] = {"run_id": "x", "stop_reason": "step_limit", "reason": "harness bug"}
+    after_error = rec() | {"task": "b", "repeat": 0}
+    after_error["rerun_of"] = {"run_id": "y", "stop_reason": "error: RuntimeError: HTTP 502"}
+    budget = rec() | {"task": "c", "repeat": 0}
+    budget["rerun_of"] = {"run_id": "z", "stop_reason": "error: BudgetError: over the cap"}
+    assert ev.api_error_counts([fixed, after_error, budget]) == (1, 0)
