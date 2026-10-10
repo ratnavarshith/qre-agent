@@ -496,7 +496,7 @@ def _desc(task, n):
 def _estimate(task, suite, settings, wrong_circuit=False):
     """A Toolbox holding one circuit estimated on both architectures with these settings, as
     the agent would have built it."""
-    toolbox = Toolbox(prompt=task["prompt"])
+    toolbox = Toolbox(prompt=task["prompt"], timeout=None)  # estimates in-process: no time limit
 
     def call(name, **arguments):  # through Toolbox.call, so outputs are kept as in a real run
         out = json.loads(toolbox.call(name, arguments))

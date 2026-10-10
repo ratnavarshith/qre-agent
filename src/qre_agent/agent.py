@@ -83,21 +83,38 @@ def system_prompt(a):
     )
 
 
-def llm_attributes(model, usage, latency):
-    """Span attributes of an LLM call that returned."""
-    return {
+def llm_attributes(model, usage, latency, reliability):
+    """Span attributes of an LLM call that returned. `reliability`: the model that answered,
+    retries, whether it was the fallback, and the kinds of failures retried."""
+    attributes = {
         "gen_ai.request.model": model,
+        "gen_ai.response.model": reliability["model"],
         "gen_ai.usage.input_tokens": usage["input_tokens"],
         "gen_ai.usage.cached_tokens": usage["cached_tokens"],
         "gen_ai.usage.output_tokens": usage["output_tokens"],
         "cost_usd": usage["cost_usd"],
         "latency_s": latency,
+        "retries": reliability["retries"],
+        "fallback": reliability["fallback"],
     }
+    if reliability["faults"]:
+        attributes["faults"] = reliability["faults"]
+    return attributes
 
 
 def llm_failure(model, error, latency):
-    """Span attributes of an LLM call that raised."""
-    return {"gen_ai.request.model": model, "error.type": type(error).__name__, "latency_s": latency}
+    """Span attributes of an LLM call that raised: error.type is a ProviderError's kind (timeout,
+    rate_limit, ...) or the exception's name."""
+    attributes = {
+        "gen_ai.request.model": model,
+        "error.type": getattr(error, "kind", None) or type(error).__name__,
+        "latency_s": latency,
+        "retries": getattr(error, "retries", 0),
+        "fallback": getattr(error, "fallback", False),
+    }
+    if faults := getattr(error, "faults", ()):
+        attributes["faults"] = list(faults)
+    return attributes
 
 
 def tool_attributes(result, latency):
@@ -254,8 +271,9 @@ def run(
                         span.set_attributes(llm_failure(model, e, time.perf_counter() - start))
                         raise
                     latency = time.perf_counter() - start
+                    served = getattr(reply, "model", None) or model  # the fallback's, after one
                     usd = cost(
-                        guard.prices[model],
+                        guard.prices[served],
                         reply.input_tokens,
                         reply.output_tokens,
                         reply.cached_tokens,
@@ -270,7 +288,13 @@ def run(
                         "cost_usd": usd,
                         "reported_cost_usd": reply.reported_cost_usd,
                     }
-                    span.set_attributes(llm_attributes(model, usage, latency))
+                    reliability = {
+                        "model": served,
+                        "retries": getattr(reply, "retries", 0),
+                        "fallback": getattr(reply, "fallback", False),
+                        "faults": list(getattr(reply, "faults", ())),
+                    }
+                    span.set_attributes(llm_attributes(model, usage, latency, reliability))
                 for k, v in usage.items():
                     totals[k] += v or 0
                 totals["llm_s"] += latency
@@ -286,6 +310,7 @@ def run(
                     latency_s=latency,
                     finish_reason=getattr(reply, "finish_reason", None),
                     **usage,
+                    **reliability,
                 )
 
                 calls = message.get("tool_calls") or []

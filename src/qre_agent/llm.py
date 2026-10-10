@@ -1,18 +1,59 @@
 """OpenRouter chat completions (OpenAI-compatible) with tool calling, as a spend.Guard client.
 OpenRouter reports what it billed for each call (usage.cost); the guard logs that next to the
-budgets.yaml estimate and warns when they disagree."""
+budgets.yaml estimate and warns when they disagree. Failures raise ProviderError, classified
+for the retry layer in reliability.py."""
 
 import json
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from email.utils import parsedate_to_datetime
 
 from .spend import Reply, api_key
 
 URL = "https://openrouter.ai/api/v1/chat/completions"
 TIMEOUT_S = 180
 CACHE_CONTROL = {"type": "ephemeral"}
+RETRYABLE = ("timeout", "rate_limit", "server", "missing_usage")
+
+
+class ProviderError(RuntimeError):
+    """A failed LLM call. `kind` is timeout, rate_limit (429), server (5xx) or missing_usage, which
+    reliability.Reliable retries, or client (other 4xx) or connection, which it doesn't.
+    `retry_after` is the provider's Retry-After in seconds, if it sent one."""
+
+    def __init__(self, kind, message, status=None, retry_after=None):
+        super().__init__(message)
+        self.kind, self.status, self.retry_after = kind, status, retry_after
+
+    @property
+    def retryable(self):
+        return self.kind in RETRYABLE
+
+
+def status_kind(status):
+    if status == 429:
+        return "rate_limit"
+    if status == 408:
+        return "timeout"
+    return "server" if status >= 500 else "client"
+
+
+def retry_after(value, now=None):
+    """Seconds from a Retry-After header: a number of seconds or an HTTP date. None if absent or
+    unreadable."""
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        date = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, date.timestamp() - (time.time() if now is None else now))
 
 
 @dataclass(frozen=True)
@@ -20,6 +61,12 @@ class ChatReply(Reply):
     message: dict = field(default_factory=dict)  # the assistant message, to send back next turn
     finish_reason: str | None = None
     reasoning_tokens: int = 0  # part of output_tokens
+    # Set by reliability.Reliable: the model that answered (the fallback's, after a fallback),
+    # failed attempts retried before this reply, and the kinds of failures seen.
+    model: str | None = None
+    retries: int = 0
+    fallback: bool = False
+    faults: tuple = ()
 
     @property
     def tool_calls(self):
@@ -66,9 +113,18 @@ class OpenRouter:
             with urllib.request.urlopen(request, timeout=self.timeout) as r:
                 return parse(json.load(r))
         except urllib.error.HTTPError as e:
-            raise RuntimeError(
-                f"OpenRouter HTTP {e.code}: {e.read().decode(errors='replace')}"
+            raise ProviderError(
+                status_kind(e.code),
+                f"OpenRouter HTTP {e.code}: {e.read().decode(errors='replace')}",
+                e.code,
+                retry_after(e.headers.get("Retry-After")),
             ) from None
+        except TimeoutError:
+            raise ProviderError("timeout", f"OpenRouter timed out after {self.timeout} s") from None
+        except urllib.error.URLError as e:
+            if isinstance(e.reason, TimeoutError):
+                raise ProviderError("timeout", f"OpenRouter timed out: {e.reason}") from None
+            raise ProviderError("connection", f"OpenRouter unreachable: {e.reason}") from None
 
 
 class Pacer:
@@ -121,8 +177,12 @@ def mark_cacheable(messages, tools):
 
 def parse(data):
     """Normalize a chat completion: input_tokens counts all prompt tokens, cached included."""
-    if data.get("error"):
-        raise RuntimeError(f"OpenRouter error: {data['error']}")
+    if error := data.get("error"):
+        code = error.get("code") if isinstance(error, dict) else None
+        kind = status_kind(code) if isinstance(code, int) else "server"
+        raise ProviderError(kind, f"OpenRouter error: {error}", code)
+    if not data.get("usage"):  # nothing to bill it by; may still have been billed
+        raise ProviderError("missing_usage", "OpenRouter reply has no usage")
     choice, usage = data["choices"][0], data["usage"]
     m = choice["message"]
     message = {"role": "assistant", "content": m.get("content") or ""}

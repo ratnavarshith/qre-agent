@@ -4,6 +4,7 @@ never re-types a circuit or a result. See docs/agent-design.md."""
 
 import ast
 import json
+import multiprocessing
 import os
 import subprocess
 import sys
@@ -25,6 +26,7 @@ BANNED_NAMES = {
 }  # fmt: skip
 ENV_KEEP = ("PATH", "SYSTEMROOT", "TEMP", "TMP")  # nothing else, so no API keys
 TIMEOUT_S = 60
+TOOL_TIMEOUT_S = 180  # an estimate; the slowest seen in the evals took under 1 s in-process
 RUNNER = Path(__file__).with_name("sandbox_runner.py")
 STANDARD_GATES = set(get_standard_gate_name_mapping())
 BICYCLE_P = {"1e-3": 1e-3, "1e-4": 1e-4}  # strings: Gemini allows enum on STRING only
@@ -32,6 +34,10 @@ DROP = ("frontier",)  # every point on surface's Pareto frontier; long and not n
 
 
 class SandboxError(Exception):
+    pass
+
+
+class ToolTimeout(Exception):
     pass
 
 
@@ -58,6 +64,41 @@ def check_code(code, allowed=ALLOWED_IMPORTS):
             raise SandboxError(f"use of {node.id!r} is not allowed")
         if isinstance(node, ast.Attribute) and node.attr.startswith("__"):
             raise SandboxError(f"access to {node.attr!r} is not allowed")
+
+
+def _child(conn, fn, args):
+    try:
+        conn.send((True, fn(*args)))
+    except Exception as e:  # noqa: BLE001 (re-raised in the parent)
+        try:
+            conn.send((False, e))
+        except Exception:  # noqa: BLE001 (an exception that doesn't pickle)
+            conn.send((False, RuntimeError(f"{type(e).__name__}: {e}")))
+
+
+def run_in_child(fn, *args, timeout):
+    """fn(*args) in a fresh process, killed after `timeout` seconds (ToolTimeout). Not a thread:
+    a thread can't be killed, and QDK's interpreter fails when used from a second thread."""
+    ctx = multiprocessing.get_context("spawn")
+    receive, send = ctx.Pipe(duplex=False)
+    process = ctx.Process(target=_child, args=(send, fn, args), daemon=True)
+    process.start()
+    send.close()
+    try:
+        if not receive.poll(timeout):
+            process.kill()
+            raise ToolTimeout(f"{fn.__name__} timed out after {timeout} s")
+        try:
+            ok, value = receive.recv()
+        except EOFError:  # the child died without answering
+            process.join()
+            raise RuntimeError(f"{fn.__name__} exited with code {process.exitcode}") from None
+    finally:
+        process.join()
+        receive.close()
+    if not ok:
+        raise value
+    return value
 
 
 def find_reset(circuit):
@@ -237,12 +278,18 @@ TOOLS = [s["name"] for s in SCHEMAS]
 
 
 class Toolbox:
-    """One agent session: circuits and results by id, and every output the agent has seen."""
+    """One agent session: circuits and results by id, and every output the agent has seen.
 
-    def __init__(self, assumptions=None, prompt=""):
-        """`prompt` is the task; numbers in it count as known to verify."""
+    Tools are safe to repeat: the same call returns the same output under a new id and leaves
+    earlier ids and results alone (tests/test_tools.py)."""
+
+    def __init__(self, assumptions=None, prompt="", timeout=TOOL_TIMEOUT_S):
+        """`prompt` is the task; numbers in it count as known to verify. `timeout`: seconds an
+        estimate may take; it runs in a child process that is killed then. None runs estimates
+        in this process, with no limit."""
         self.assumptions = assumptions or load_assumptions()
         self.prompt = prompt
+        self.timeout = timeout
         self.circuits, self.results, self.outputs = {}, {}, []
 
     def call(self, name, arguments):
@@ -254,6 +301,11 @@ class Toolbox:
             out = {"error": f"{type(e).__name__}: {e}"}
         self.outputs.append(out)
         return json.dumps(out)
+
+    def _estimate(self, fn, circuit, a):
+        if self.timeout is None:
+            return fn(circuit, a)
+        return run_in_child(fn, circuit, a, timeout=self.timeout)
 
     def build_circuit(self, code):
         circuit = run_circuit_code(code)
@@ -297,7 +349,7 @@ class Toolbox:
 
     def estimate_surface(self, circuit_id, physical_error_rate=None, error_budget=None):
         a = self._assumptions(physical_error_rate=physical_error_rate, error_budget=error_budget)
-        r = surface.estimate_surface(self.circuits[circuit_id], a)
+        r = self._estimate(surface.estimate_surface, self.circuits[circuit_id], a)
         return self._record("surface", circuit_id, {**r, "passes": r["error"] <= a.error_budget})
 
     def estimate_bicycle(self, circuit_id, code=None, physical_error_rate=None, error_budget=None):
@@ -311,9 +363,8 @@ class Toolbox:
         a = self._assumptions(
             bicycle_code=code, physical_error_rate=physical_error_rate, error_budget=error_budget
         )
-        return self._record(
-            "bicycle", circuit_id, bicycle.estimate_bicycle(self.circuits[circuit_id], a)
-        )
+        r = self._estimate(bicycle.estimate_bicycle, self.circuits[circuit_id], a)
+        return self._record("bicycle", circuit_id, r)
 
     def _result(self, result_id, architecture):
         r = self.results[result_id]

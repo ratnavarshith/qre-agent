@@ -192,6 +192,64 @@ def test_tools_end_to_end_on_qft4():
     assert json.loads(tb.call("verify", args))["failures"][0]["check"] == "numbers_match"
 
 
+@pytest.mark.compiler
+def test_tools_are_safe_to_repeat():
+    # The agent may call a tool again after a timeout or a retried LLM call: the same call must
+    # give the same output under a new id and leave earlier ids and results alone.
+    tb = Toolbox()
+
+    def call(name, **arguments):
+        return json.loads(tb.call(name, arguments))
+
+    def same(a, b, *ids):
+        drop = {"circuit_id", "result_id", "circuit", *ids}
+        assert {k: v for k, v in a.items() if k not in drop} == {
+            k: v for k, v in b.items() if k not in drop
+        }
+
+    c1, c2 = call("build_circuit", code=QFT4), call("build_circuit", code=QFT4)
+    assert (c1["circuit_id"], c2["circuit_id"]) == ("c1", "c2")
+    same(c1, c2)
+    s1, s2, s3 = (call("estimate_surface", circuit_id=c) for c in ("c1", "c1", "c2"))
+    b1, b2, b3 = (call("estimate_bicycle", circuit_id=c) for c in ("c1", "c1", "c2"))
+    assert [r["result_id"] for r in (s1, s2, s3, b1, b2, b3)] == [
+        "r1",
+        "r2",
+        "r3",
+        "r4",
+        "r5",
+        "r6",
+    ]
+    for a, b in ((s1, s2), (s1, s3), (b1, b2), (b1, b3)):
+        same(a, b)
+    stored = json.loads(json.dumps([tb.results["r1"], tb.results["r4"]]))
+    assert stored == [s1, b1]  # untouched by the repeats
+
+    keys = ("result_id", "architecture", "physical_qubits", "runtime_ns", "physical_qubit_seconds")
+    answer = {
+        "summary": f"Surface: {s1['physical_qubits']:,} physical qubits. That saves 5000 qubits.",
+        "estimates": [{k: r[k] for k in keys} for r in (s1, b1)],
+    }
+    args = {"surface_result": "r1", "bicycle_result": "r4", "final_answer": json.dumps(answer)}
+    first = call("verify", **args)
+    assert first["failures"][0]["check"] == "numbers_match"
+    # a failed verify's output doesn't make the unmatched number known to the next one
+    assert call("verify", **args) == first
+    answer["summary"] = answer["summary"].replace(" That saves 5000 qubits.", "")
+    args["final_answer"] = json.dumps(answer)
+    assert call("verify", **args) == call("verify", **args) == {"passed": True, "failures": []}
+
+
+@pytest.mark.compiler
+def test_an_estimate_in_a_child_process_equals_one_in_this_process():
+    results = []
+    for timeout in (60, None):
+        tb = Toolbox(timeout=timeout)
+        tb.call("build_benchmark", {"family": "qft", "n": 3})
+        results.append([tb.estimate_surface("c1"), tb.estimate_bicycle("c1")])
+    assert results[0] == results[1]
+
+
 def test_every_enum_is_a_string_enum():
     # Gemini's function-calling schema allows enum on STRING only; a numeric enum made Gemini call
     # estimate_bicycle with {} in every trial task.
@@ -209,7 +267,7 @@ def test_bicycle_error_rate_is_converted_from_its_string(monkeypatch, p, expecte
         "qre_agent.tools.bicycle.estimate_bicycle",
         lambda circuit, a: seen.append(a.physical_error_rate) or {},
     )
-    tb = Toolbox()
+    tb = Toolbox(timeout=None)  # in this process, where the patch applies
     tb.circuits["c1"] = QuantumCircuit(1)
     out = json.loads(tb.call("estimate_bicycle", {"circuit_id": "c1", "physical_error_rate": p}))
     assert "error" not in out and seen == [expected]
