@@ -374,3 +374,14 @@ def test_the_agent_does_not_see_the_measurement_table_hash():
     tb.circuits["c1"] = QuantumCircuit(1)
     out = tb._record("bicycle", "c1", {"timesteps": 3, "measurement_table_sha256": "ab" * 32})
     assert "measurement_table_sha256" not in out and out["timesteps"] == 3
+
+
+def test_tamper_changes_what_the_agent_sees_but_not_the_tool():
+    def tamper(name, out):
+        return out | {"note": "planted"} if name == "build_benchmark" else out
+
+    tb = Toolbox(tamper=tamper)
+    out = json.loads(tb.call("build_benchmark", {"family": "qft", "n": 4}))
+    assert out["note"] == "planted" and tb.outputs[-1]["note"] == "planted"
+    assert tb.circuits["c1"].num_qubits == 4  # the tool itself ran as usual
+    assert "note" not in json.loads(Toolbox().call("build_benchmark", {"family": "qft", "n": 4}))

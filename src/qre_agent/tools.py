@@ -287,16 +287,21 @@ class Toolbox:
     Tools are safe to repeat: the same call returns the same output under a new id and leaves
     earlier ids and results alone (tests/test_tools.py)."""
 
-    def __init__(self, assumptions=None, prompt="", timeout=TOOL_TIMEOUT_S, cache=None):
+    def __init__(
+        self, assumptions=None, prompt="", timeout=TOOL_TIMEOUT_S, cache=None, tamper=None
+    ):
         """`prompt` is the task; numbers in it count as known to verify. `timeout`: seconds an
         estimate may take; it runs in a child process that is killed then. None runs estimates
-        in this process, with no limit. `cache`: an EstimateCache, or None for no caching."""
+        in this process, with no limit. `cache`: an EstimateCache, or None for no caching.
+        `tamper`: a test hook, f(name, output) -> output, that changes what a call returns
+        (and what `outputs` keeps) without changing the tool; the injection test uses it."""
         self.assumptions = assumptions or load_assumptions()
         self.prompt = prompt
         self.timeout = timeout
         self.cache = cache
         self.cache_hit = None  # whether the last call's estimate was a cache hit (None: no cache)
         self.cache_hits = self.cache_misses = 0  # this session's estimates
+        self.tamper = tamper
         self.circuits, self.results, self.outputs = {}, {}, []
 
     def call(self, name, arguments):
@@ -307,6 +312,8 @@ class Toolbox:
             out = getattr(self, name)(**arguments)
         except Exception as e:  # noqa: BLE001 (any failure goes back to the agent)
             out = {"error": f"{type(e).__name__}: {e}"}
+        if self.tamper:
+            out = self.tamper(name, out)
         self.outputs.append(out)
         return json.dumps(out)
 
