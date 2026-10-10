@@ -75,3 +75,30 @@ def test_every_cell_runs_and_is_summarized(run_faults, tmp_path):
     summary = (out / "summary.md").read_text("utf-8")
     assert summary.count("\n| ") == 5  # header and four cells
     assert "| 0% | on | 1 | 100% |" in summary and "| 100% | off | 1 | 0% |" in summary
+
+
+def test_the_fallback_can_be_kept_up_while_the_primary_is_forced_down(run_faults):
+    cfg = CFG | {"fallback_injection_rate": 0.0}
+    wrapped, injector = run_faults.stack(cfg, {"id": "t"}, 1.0, True, "claude")
+    assert injector.rate == 1.0 and wrapped.fallback[0] is not injector
+    assert not isinstance(wrapped.fallback[0], Injected)  # the guard itself
+
+
+@pytest.mark.compiler
+def test_with_the_primary_down_every_call_is_answered_by_the_fallback(run_faults, tmp_path):
+    cfg = CFG | {"injection_rates": [1.0], "reliability": [True], "fallback_injection_rate": 0.0,
+                 "fault_kinds": ["timeout", "rate_limit", "server", "malformed_json"]}  # fmt: skip
+    config = tmp_path / "config.yaml"
+    config.write_text(yaml.safe_dump(cfg))
+    suite = run_faults.load_suite(run_faults.REPO_ROOT / cfg["tasks"])
+    tasks = [t for t in suite["tasks"] if t["id"] == TASK]
+    Scripted.failures = 0
+    primary, fallback = Scripted(), Scripted()
+    stopped = run_faults.run_experiment(config, cfg, tasks, suite, 1.0, primary, fallback)
+    assert stopped is None
+    (out,) = (tmp_path / "faults").iterdir()
+    (rec,) = map(json.loads, (out / "runs.jsonl").read_text("utf-8").splitlines())
+    assert rec["correct"] and rec["steps"] == 3
+    assert rec["answered"] == rec["fallback_answered"] == 3 and rec["models"] == {"fake2": 3}
+    assert rec["fallbacks"] == 3 and rec["retries"] >= 9  # 3 retries before each fallback
+    assert "| 3 of 3 |" in (out / "summary.md").read_text("utf-8")

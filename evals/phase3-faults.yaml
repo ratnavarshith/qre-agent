@@ -15,12 +15,10 @@ fault_kinds: [timeout, rate_limit, server, malformed_json]  # drawn uniformly
 reliability: [false, true]
 retry: {max_retries: 3, base_s: 1.0, cap_s: 30.0}
 fallback: {model: claude-haiku-4-5, phase: phase3}  # Anthropic API, ANTHROPIC_API_KEY
-# Cost estimate (no API calls): mean tokens of earlier runs of the profile model, as in the eval
-# configs. Prompt tokens of the first call, measured 2026-10-09 (see evals/eval-gemini-flash.yaml);
-# Haiku 4.5's from OpenRouter, same tokenizer as the Anthropic API.
-prompt_tokens: 1377
-profile: {model: google/gemini-2.5-flash, prompt_tokens: 1377}
-fallback_prompt_tokens: 2361
+# Cost estimate (no API calls): mean cost of earlier runs of the profile models, as in the eval
+# configs; the fallback's are its OpenRouter runs from the four-model eval (same tokenizer).
+profile: {model: google/gemini-2.5-flash}
+fallback_profile: {model: anthropic/claude-haiku-4.5}
 # Stop and ask when the cost passes cost_factor x the expected cost. API errors don't stop this
 # one: without the reliability layer, injected faults are meant to end runs.
 stop: {cost_factor: 2.0}

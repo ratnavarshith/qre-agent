@@ -1,6 +1,6 @@
 """Phase 3 reliability experiment: every task in the config at each fault-injection rate, with
 the reliability layer (retries, fallback) off and on, graded like the eval. Writes
-results/phase3/faults/<date>[-name]/ with the config, meta.json, runs.jsonl (one graded line per
+results/phase3/faults/<date>[-name]/ (or the config's results_dir) with the config, meta.json, runs.jsonl (one graded line per
 run) and summary.md. Traces go to runs/. Spend phase: the config's (phase3).
 
   .venv/Scripts/python scripts/run_faults.py evals/phase3-faults.yaml --estimate   # cost, no API calls
@@ -15,6 +15,7 @@ import shutil
 import statistics
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 import yaml
@@ -28,7 +29,7 @@ from qre_agent.eval import expected_cost, load_suite, past_runs, worst_case
 from qre_agent.faults import Injected
 from qre_agent.llm import OpenRouter
 from qre_agent.reliability import build
-from qre_agent.spend import REPO_ROOT, Guard, cost
+from qre_agent.spend import REPO_ROOT, Guard
 from qre_agent.tools import SCHEMAS, Toolbox
 from qre_agent.tracing import read_spans
 
@@ -42,27 +43,27 @@ def cells(cfg):
 def estimate(cfg, tasks, guard):
     """Prints the expected and worst-case cost; returns the expected cost.
 
-    Expected: the eval's per-run estimate (mean cost of earlier profile-model runs), times
-    1 / (1 - rate x the malformed share) for the LLM call each injected malformed reply adds,
-    plus, with reliability on, the calls that reach the fallback: an LLM call falls back when all
-    max_retries + 1 attempts draw an error fault, (rate x the error share)^(max_retries + 1), and
-    a fallback call costs the profile's mean tokens per call, input scaled to the fallback's
-    tokenizer, at its prices. Runs without reliability that end early are counted in full.
-    Worst case: every run uses every step at the guard's worst case on the primary and, with
-    reliability on, every call is also answered by the fallback at its worst case (injected
-    faults are free; real failures logged at worst case are bounded by the phase cap)."""
+    Per cell, with reliability on, a call reaches the fallback when all max_retries + 1 attempts
+    draw a fault, rate^(max_retries + 1), and every fault kind is retried. A run's expected cost
+    mixes the two providers by that share: (1 - p) x the primary's per-run cost + p x the
+    fallback's. Each is the mean cost of earlier runs of a profile model (cfg["profile"],
+    cfg["fallback_profile"]; the fallback's at its own prices), and the primary's is raised by
+    1 / (1 - rate x the malformed share) for the call each malformed reply adds. Runs without
+    reliability that end early are counted in full. Faults injected on the fallback are ignored.
+    Worst case: every run uses every step at the guard's worst case on the primary (none when
+    the primary is forced down: injected faults are free) and, with reliability on, also on the
+    fallback; real failures logged at worst case are bounded by the phase cap."""
     prices, n_tasks = guard.prices, len(tasks)
     past = past_runs(cfg["profile"]["model"])
     per_run = expected_cost(prices[cfg["model"]], past)
     steps = statistics.mean(r["steps"] for r in past)
-    tokens_in = statistics.mean(r["input_tokens"] / r["steps"] for r in past)
-    tokens_out = statistics.mean(r["output_tokens"] / r["steps"] for r in past)
     fb = cfg["fallback"]["model"]
-    ratio = cfg["fallback_prompt_tokens"] / cfg["profile"]["prompt_tokens"]
-    fb_call = cost(prices[fb], tokens_in * ratio, tokens_out)
+    fb_past = past_runs(cfg["fallback_profile"]["model"])
+    fb_run = expected_cost(prices[fb], fb_past)
     kinds = cfg["fault_kinds"]
     malformed = kinds.count("malformed_json") / len(kinds)
     attempts = cfg["retry"]["max_retries"] + 1
+    n = n_tasks * cfg["runs"]
 
     def worst(model):
         return sum(worst_case(t["prompt"], prices[model], cfg["max_steps"], cfg["max_tokens"])
@@ -70,18 +71,20 @@ def estimate(cfg, tasks, guard):
 
     expected = worst_total = 0.0
     print(f"{n_tasks} tasks x {cfg['runs']} runs x {len(cells(cfg))} cells = "
-          f"{n_tasks * cfg['runs'] * len(cells(cfg))} runs on {cfg['model']}, fallback {fb}")  # fmt: skip
+          f"{n * len(cells(cfg))} runs on {cfg['model']}, fallback {fb}")  # fmt: skip
     print("rate reliability  expected   worst")
     for rate, on in cells(cfg):
-        cell = n_tasks * cfg["runs"] * per_run / (1 - rate * malformed)
-        p_fallback = (rate * (1 - malformed)) ** attempts if on else 0.0
-        cell += n_tasks * cfg["runs"] * steps * p_fallback * fb_call
-        bound = cfg["runs"] * (worst(cfg["model"]) + (worst(fb) if on else 0.0))
+        p_fb = rate**attempts if on else 0.0
+        primary = per_run / (1 - rate * malformed) if rate < 1 else 0.0
+        cell = n * ((1 - p_fb) * primary + p_fb * fb_run)
+        bound = cfg["runs"] * ((0 if rate == 1 and on else worst(cfg["model"]))
+                               + (worst(fb) if on else 0.0))  # fmt: skip
         expected, worst_total = expected + cell, worst_total + bound
         print(f"{rate:4.1f} {'on ' if on else 'off'}         ${cell:8.4f}  ${bound:8.2f}")
-    print(f"expected: ${expected:.4f} (${per_run:.5f} per run: mean of {len(past)} earlier "
-          f"{cfg['profile']['model']} runs, {steps:.1f} LLM calls each; a fallback call "
-          f"${fb_call:.5f}); the run stops and asks above ${cfg['stop']['cost_factor'] * expected:.4f}")  # fmt: skip
+    print(f"expected: ${expected:.4f} (primary ${per_run:.5f} per run, mean of {len(past)} earlier "
+          f"{cfg['profile']['model']} runs, {steps:.1f} LLM calls each; fallback ${fb_run:.5f} per "
+          f"run, mean of {len(fb_past)} earlier {cfg['fallback_profile']['model']} runs); "
+          f"the run stops and asks above ${cfg['stop']['cost_factor'] * expected:.4f}")  # fmt: skip
     print(
         f"worst case: ${worst_total:.2f} (every run uses all {cfg['max_steps']} steps, each "
         "call at the guard's worst case, and with reliability on each also on the fallback)"
@@ -93,8 +96,9 @@ def estimate(cfg, tasks, guard):
 
 def stack(cfg, task, rate, on, fallback_client):
     """(what the agent calls, the primary's injector or None): a Guard, behind an Injected when
-    rate > 0, behind a Reliable when on. Faults on the primary and the fallback are drawn from
-    separate seeds; off and on see the same draws until the first retry."""
+    rate > 0, behind a Reliable when on. The fallback is injected at the config's
+    fallback_injection_rate (default: the same rate). Faults on the primary and the fallback are
+    drawn from separate seeds; off and on see the same draws until the first retry."""
     seed = f"{cfg['seed']}-{task['id']}-{rate}"
     kinds = tuple(cfg["fault_kinds"])
     guard = Guard(cfg["phase"])
@@ -102,7 +106,8 @@ def stack(cfg, task, rate, on, fallback_client):
     fallback = None
     if on and fallback_client is not None:
         fb_guard = Guard(cfg["fallback"]["phase"])
-        fb = Injected(fb_guard, rate, f"{seed}-fallback", kinds) if rate else fb_guard
+        fb_rate = cfg.get("fallback_injection_rate", rate)  # 0 keeps the fallback up
+        fb = Injected(fb_guard, fb_rate, f"{seed}-fallback", kinds) if fb_rate else fb_guard
         fallback = (fb, fallback_client, cfg["fallback"]["model"])
     wrapped = build(primary, {"enabled": on, **cfg["retry"]}, fallback, seed)
     return wrapped, primary if rate else None
@@ -110,22 +115,27 @@ def stack(cfg, task, rate, on, fallback_client):
 
 def reliability_stats(run_id, runs_dir):
     """Retries and fallbacks over a run's LLM calls, from its OpenTelemetry trace (which also has
-    the call that raised)."""
+    the call that raised): retries, calls sent to the fallback, calls answered, calls the
+    fallback answered, and the answered calls by model."""
     path = Path(runs_dir) / "otel" / f"{run_id}.jsonl"
     llm = (
         [s["attributes"] for s in read_spans(path) if s["name"] == "llm_call"]
         if path.exists()
         else []
     )
+    answered = [a for a in llm if "gen_ai.response.model" in a]
     return {"retries": sum(a.get("retries", 0) for a in llm),
-            "fallbacks": sum(bool(a.get("fallback")) for a in llm)}  # fmt: skip
+            "fallbacks": sum(bool(a.get("fallback")) for a in llm),
+            "answered": len(answered),
+            "fallback_answered": sum(bool(a.get("fallback")) for a in answered),
+            "models": dict(Counter(a["gen_ai.response.model"] for a in answered))}  # fmt: skip
 
 
 def run_experiment(config_path, cfg, tasks, suite, expected, client, fallback_client):
     """Task by task, every cell, so a stop leaves the cells balanced. Returns why it stopped
     early, or None."""
     name = time.strftime("%Y-%m-%d") + (f"-{cfg['name']}" if cfg.get("name") else "")
-    out = OUT_DIR / name
+    out = (REPO_ROOT / cfg["results_dir"] if "results_dir" in cfg else OUT_DIR) / name
     if out.exists():
         out = out.with_name(f"{out.name}-{time.strftime('%H%M%S')}")
     out.mkdir(parents=True)
@@ -198,9 +208,9 @@ def summarize(records, meta):
         "",
         (
             "| rate | reliability | runs | correct | 95% CI | api errors | cost $ | $/run "
-            "| p50 s | p95 s | retries/run | fallbacks/run | injected/run |"
+            "| p50 s | p95 s | retries/run | fallbacks/run | injected/run | answered by fallback |"
         ),
-        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for rate, on in cells(cfg):
         rs = [r for r in records if r["rate"] == rate and r["reliability"] == on]
@@ -216,9 +226,18 @@ def summarize(records, meta):
             f"| {statistics.median(latency):.1f} | {p95(latency):.1f} "
             f"| {statistics.mean(r['retries'] for r in rs):.2f} "
             f"| {statistics.mean(r['fallbacks'] for r in rs):.2f} "
-            f"| {statistics.mean(sum(r['injected'].values()) for r in rs):.2f} |"
+            f"| {statistics.mean(sum(r['injected'].values()) for r in rs):.2f} "
+            f"| {sum(r['fallback_answered'] for r in rs)} of {sum(r['answered'] for r in rs)} |"
         )
+    models = Counter()
+    for r in records:
+        models.update(r["models"])
     lines += [
+        "",
+        (
+            f"LLM calls answered, by model: {dict(models)}. 'Fallbacks/run' counts calls sent to "
+            "the fallback, answered or not; 'answered by fallback' counts the replies it gave."
+        ),
         "",
         f"Versions: {json.dumps(meta['versions'])}",
         f"Hardware: {json.dumps(meta['hardware'])}",

@@ -1,0 +1,27 @@
+# Phase 3 fallback check: 10 tasks (5 standard, 3 free-form, 2 ambiguous) with the primary forced
+# 100% down by fault injection and the reliability layer on, so every LLM call has to be answered
+# by the fallback, claude-haiku-4-5 on Anthropic's API. The fallback itself is not injected.
+# Copied next to the results in results/phase3/fallback/<date>/.
+#   .venv/Scripts/python scripts/run_faults.py evals/phase3-fallback.yaml --estimate   # cost, no API calls
+#   .venv/Scripts/python scripts/run_faults.py evals/phase3-fallback.yaml
+model: google/gemini-2.5-flash  # the primary: never reached
+phase: phase3
+tasks: evals/tasks.yaml
+only: [std-qft4-1e3-twogross, std-adder16-1e4-gross, std-tfim8-1e4-twogross,
+       std-grover16-1e3-twogross, std-qpe4-1e4-gross, ff-qft-noswap-5, ff-ghz-rz-5, ff-grover-4,
+       amb-qft-n, amb-adder4-code]
+runs: 1
+seed: 0  # seeds the injected faults and the backoff jitter, per task
+max_steps: 12
+max_tokens: 4096  # per LLM call
+injection_rates: [1.0]  # the primary fails every attempt
+fallback_injection_rate: 0.0
+fault_kinds: [timeout, rate_limit, server, malformed_json]  # drawn uniformly
+reliability: [true]
+retry: {max_retries: 3, base_s: 1.0, cap_s: 30.0}
+fallback: {model: claude-haiku-4-5, phase: phase3}  # Anthropic API, ANTHROPIC_API_KEY
+results_dir: results/phase3/fallback
+# Cost estimate: mean cost of earlier runs of the profile models (see evals/phase3-faults.yaml).
+profile: {model: google/gemini-2.5-flash}
+fallback_profile: {model: anthropic/claude-haiku-4.5}  # its OpenRouter runs, same tokenizer
+stop: {cost_factor: 2.0}
