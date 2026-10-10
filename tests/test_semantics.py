@@ -1,3 +1,5 @@
+import math
+
 import pytest
 from qiskit import QuantumCircuit
 from qiskit.circuit.library import QFT, CPhaseGate, QFTGate
@@ -135,3 +137,29 @@ def test_qpe_and_tfim_compare_counts_only():
 
 def test_checks_are_for_small_n_only():
     assert "n <= 8" in semantics.check("qft", FAMILIES["qft"](9), 9)
+
+
+def _qft_qubit0_first(n, angle_sign=1):
+    """The textbook QFT circuit with qubit 0 as the most significant bit and no swaps: what
+    Gemini, DeepSeek, Haiku and Sonnet wrote for 'QFT without swaps' in the eval."""
+    c = QuantumCircuit(n)
+    for i in range(n):
+        c.h(i)
+        for j in range(i + 1, n):
+            c.cp(angle_sign * math.pi / 2 ** (j - i), j, i)
+    return c
+
+
+@pytest.mark.parametrize("n", [4, 5])
+def test_qft_accepts_either_qubit_order(n):
+    reversed_order = _qft_qubit0_first(n)
+    assert semantics.qft(reversed_order, n, swaps=False) is None
+    assert semantics.qft(reversed_order, n, swaps=True) is not None
+    with_swaps = FAMILIES["qft"](n).reverse_bits()  # the QFT itself, qubits relabelled
+    assert semantics.qft(with_swaps, n, swaps=True) is None
+    assert semantics.qft(with_swaps, n, swaps=False) is not None
+
+
+def test_qft_in_either_qubit_order_still_checks_the_angles():
+    assert semantics.qft(_qft_qubit0_first(5, angle_sign=-1), 5, swaps=False) is not None
+    assert semantics.qft(_qft_qubit0_first(5, angle_sign=-1), 5) is not None

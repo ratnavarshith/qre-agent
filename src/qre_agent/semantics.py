@@ -35,7 +35,9 @@ def _unitary(circuit):
 
 
 def qft(circuit, n, swaps=None):
-    """`swaps`: True requires the final swaps, False requires none, None accepts either."""
+    """`swaps`: True requires the final swaps, False requires none, None accepts either. Either
+    qubit order is accepted: the circuit written with qubit 0 as the most significant bit is
+    the same QFT with its qubits relabelled (grader v2; v1 took Qiskit's order only)."""
     if circuit.num_qubits != n:
         return f"expected {n} qubits, got {circuit.num_qubits}"
     reference = QuantumCircuit(n)
@@ -44,9 +46,10 @@ def qft(circuit, n, swaps=None):
     for i in range(n // 2):
         no_swaps.swap(i, n - 1 - i)
     u = Operator(_unitary(circuit))
-    if swaps is not False and u.equiv(Operator(reference)):
-        return None
-    if swaps is not True and u.equiv(Operator(no_swaps)):
+    accepted = ([reference] if swaps is not False else []) + (
+        [no_swaps] if swaps is not True else []
+    )
+    if any(u.equiv(Operator(c)) or u.equiv(Operator(c.reverse_bits())) for c in accepted):
         return None
     which = {None: "with or without", True: "with", False: "without"}[swaps]
     return f"unitary is not the QFT {which} the final swaps"
