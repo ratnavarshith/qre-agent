@@ -236,6 +236,8 @@ A budget refusal (`BudgetError`) ends the task on the leg that was refused, with
 
 **Estimate cache in the trace.** With a cache on the `Toolbox`, each estimate's `tool_call` record has `cache_hit` (true or false), the span has the `cache_hit` attribute, and the `final` record has `cache: {hits, misses}` for the session. Records of tools that aren't cached, and runs without a cache, are unchanged.
 
+**Runner** (`scripts/run_eval.py`, `evals/phase3-routed.yaml`). `routing: none | f` in an eval config (default `none`); `f` needs `strong_model`. Routed runs use the estimate cache (`cache/estimates/`), one `Toolbox` per leg. `model` is the primary; `max_rpm` and `strong_cache` apply to the strong model's client only. A record in `runs.jsonl` is the answering leg's, graded as usual, with `model` the one that answered, `cost_usd` and `steps` over both legs, `latency_s` over both legs (the pacer's wait left out), and the `routing` record above. `results_dir` puts the results in that directory instead of under the model. `--estimate` prints the simulation's expected cost and the guard's worst case (every task using every step on both models, far above what the stop rule and the phase cap allow). The summary adds a routing section: this run next to the simulation's range for policy f, escalations by reason, accuracy and cost split by who answered, p50/p95 latency and cache hits. One pass has no spread.
+
 ## Still to build
 
 - A rule for what happens when `verify` fails: let the agent revise a limited number of times, then report the failure instead of answering.

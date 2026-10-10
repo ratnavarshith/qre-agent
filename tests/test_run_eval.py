@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from qre_agent.cache import EstimateCache
 from qre_agent.llm import ChatReply, Pacer
 from qre_agent.spend import Guard
 
@@ -230,3 +231,61 @@ def test_regrade_replays_the_trace_and_stops_where_the_current_rules_pass(
     assert after["correct"] and after["verify_first_try"] and not after["verify_after_retry"]
     assert after["grader"] == 2 and after["cost_usd"] == before["cost_usd"]
     assert (out / "summary-v2.md").exists()
+
+
+class BuildsFirst:
+    """A primary whose first tool call is build_circuit, so routing sends the task on."""
+
+    def complete(self, model, messages, max_tokens):
+        message = {"role": "assistant", "content": "",
+                   "tool_calls": [call("build_circuit", {"code": "x"}, 1)]}  # fmt: skip
+        return ChatReply("", 100, 10, message=message)
+
+
+@pytest.mark.compiler
+def test_a_routed_eval_escalates_records_and_summarizes(run_eval, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        run_eval,
+        "OpenRouter",
+        lambda schemas, seed, cache: Scripted(seed=seed) if cache else BuildsFirst(),
+    )
+    monkeypatch.setattr(run_eval, "EstimateCache", lambda: EstimateCache(tmp_path / "estimates"))
+    Scripted.failures = 0
+    budgets = tmp_path / "budgets.yaml"
+    prices = {m: {"input": 1.0, "output": 2.0} for m in ("fake", "strong")}
+    budgets.write_text(yaml.safe_dump({"caps": {"phase3": 1}, "prices": prices}))
+    guard = Guard("phase3", budgets, tmp_path / "spend.jsonl")
+    cfg = {"model": "fake", "strong_model": "strong", "strong_cache": True, "routing": "f",
+           "phase": "phase3", "tasks": "evals/tasks.yaml", "runs": 1, "seed": 0, "max_steps": 6,
+           "max_tokens": 100, "results_dir": str(tmp_path / "routed"),
+           "prediction": {"correct": [0.9, 0.94, 0.98], "cost": [0.02, 0.023, 0.025],
+                          "escalated": [0.25, 0.27, 0.28]},
+           "stop": {"cost_factor": 100, "api_error_rate": 1.0, "min_runs": 10}}  # fmt: skip
+    config = tmp_path / "config.yaml"
+    config.write_text(yaml.safe_dump(cfg))
+    suite = run_eval.load_suite(run_eval.REPO_ROOT / cfg["tasks"])
+    tasks = [t for t in suite["tasks"] if t["id"] == TASK]
+
+    assert run_eval.run_eval(config, cfg, tasks, suite, guard, expected=1.0) is None
+    (out,) = (tmp_path / "routed").iterdir()
+    (rec,) = [json.loads(line) for line in (out / "runs.jsonl").read_text("utf-8").splitlines()]
+    assert rec["correct"] and rec["model"] == "strong" and rec["run_id"].endswith("-escalated")
+    routing = rec["routing"]
+    assert (routing["escalated"], routing["reason"]) == (True, "first_build")
+    assert rec["cost_usd"] == pytest.approx(routing["cost_usd"])
+    assert routing["cost_before_switch_usd"] > 0 < routing["cost_after_switch_usd"]
+    assert (routing["cache_hits"], routing["cache_misses"]) == (0, 2)
+    summary = (out / "summary.md").read_text("utf-8")
+    assert "## Routing (policy f)" in summary and "first_build 1" in summary
+    run_eval.resummarize(out)  # the section is rebuilt from the records
+    assert "## Routing (policy f)" in (out / "summary.md").read_text("utf-8")
+
+
+def test_routing_needs_a_known_policy_and_a_strong_model(run_eval):
+    assert not run_eval.routed({})
+    assert not run_eval.routed({"routing": "none"})
+    assert run_eval.routed({"routing": "f", "strong_model": "s"})
+    with pytest.raises(SystemExit, match="unknown routing"):
+        run_eval.routed({"routing": "g"})
+    with pytest.raises(SystemExit, match="strong_model"):
+        run_eval.routed({"routing": "f"})

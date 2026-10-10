@@ -21,6 +21,7 @@ from pathlib import Path
 import yaml
 
 from qre_agent.agent import environment, git_state, run
+from qre_agent.cache import EstimateCache
 from qre_agent.eval import (
     TYPES,
     expected_cost,
@@ -38,6 +39,8 @@ from qre_agent.eval import (
     worst_case,
 )
 from qre_agent.llm import OpenRouter, Paced, Pacer
+from qre_agent.routing import POLICIES, run_routed
+from qre_agent.routing import summary as routing_summary
 from qre_agent.spend import REPO_ROOT, BudgetError, Guard
 from qre_agent.tools import SCHEMAS, Toolbox
 
@@ -50,6 +53,38 @@ def selected(cfg, suite):
     if unknown := set(only or ()) - {t["id"] for t in suite["tasks"]}:
         raise SystemExit(f"unknown task ids in `only`: {sorted(unknown)}")
     return [t for t in suite["tasks"] if not only or t["id"] in only]
+
+
+def routed(cfg):
+    """Whether the config turns on cost routing (`routing: f`, with `strong_model`)."""
+    policy = cfg.get("routing", "none")
+    if policy not in POLICIES:
+        raise SystemExit(f"unknown routing {policy!r}, expected one of {POLICIES}")
+    if policy != "none" and "strong_model" not in cfg:
+        raise SystemExit("routing needs a strong_model")
+    return policy != "none"
+
+
+def estimate_routed(cfg, tasks, guard):
+    """Prints the worst-case and expected cost of a routed eval; returns the expected cost.
+    Expected: cfg["expected_cost_per_run"], the simulation's policy f; worst case: every task
+    uses every step on the primary and then on the strong model."""
+    n_runs = len(tasks) * cfg["runs"]
+    worst = cfg["runs"] * sum(
+        worst_case(t["prompt"], guard.prices[m], cfg["max_steps"], cfg["max_tokens"])
+        for t in tasks
+        for m in (cfg["model"], cfg["strong_model"])
+    )
+    expected = cfg["expected_cost_per_run"] * n_runs
+    print(f"{len(tasks)} tasks x {cfg['runs']} runs = {n_runs} routed runs, "
+          f"{cfg['model']} then {cfg['strong_model']}")  # fmt: skip
+    print(f"worst case: ${worst:.4f} (every run uses all {cfg['max_steps']} steps on both models, "
+          "each call at the guard's worst case)")  # fmt: skip
+    print(f"expected: ${expected:.4f} (${cfg['expected_cost_per_run']:.4f} per run, the "
+          f"simulation's policy f); the eval stops and asks above "
+          f"${cfg['stop']['cost_factor'] * expected:.4f}")  # fmt: skip
+    print(f"phase {cfg['phase']} has ${guard.remaining():.4f} left of ${guard.cap}")
+    return expected
 
 
 def estimate(cfg, tasks, guard):
@@ -82,7 +117,10 @@ def estimate(cfg, tasks, guard):
 
 def out_dir(cfg):
     name = time.strftime("%Y-%m-%d") + (f"-{cfg['name']}" if cfg.get("name") else "")
-    path = EVAL_DIR / cfg["model"].replace("/", "_") / name
+    if cfg.get("results_dir"):  # e.g. a routed eval: not under one model
+        path = REPO_ROOT / cfg["results_dir"] / name
+    else:
+        path = EVAL_DIR / cfg["model"].replace("/", "_") / name
     if path.exists():
         path = path.with_name(f"{path.name}-{time.strftime('%H%M%S')}")
     path.mkdir(parents=True)
@@ -90,33 +128,49 @@ def out_dir(cfg):
 
 
 def make_client(cfg, seed, pacer):
-    """The OpenRouter client for one repeat, behind the eval's pacer if it has one."""
+    """The OpenRouter client for one repeat, behind the eval's pacer if it has one. When routed,
+    (primary client, strong client): the pacer is for the strong model's rate limit only."""
     client = OpenRouter(SCHEMAS, seed=seed, cache=cfg.get("cache", False))
+    if routed(cfg):
+        strong = OpenRouter(SCHEMAS, seed=seed, cache=cfg.get("strong_cache", False))
+        return client, Paced(strong, pacer) if pacer else strong
     return Paced(client, pacer) if pacer else client
 
 
 def run_one(cfg, task, repeat, run_id, client, guard, suite, rerun_of=None):
     """One graded run. Returns its runs.jsonl record and why the budget guard refused a call, if
     it did."""
-    toolbox, refused = Toolbox(), None
-    pacer = getattr(client, "pacer", None)
+    toolbox, refused, routing = Toolbox(), None, None
+    pacer = getattr(client[1] if routed(cfg) else client, "pacer", None)
     waited = pacer.waited if pacer else 0.0
     start = time.perf_counter()
-    try:
-        result = run(task["prompt"], client, guard, cfg["model"], run_id, toolbox,
-                     cfg["max_steps"], cfg["max_tokens"], RUNS_DIR)  # fmt: skip
-    except Exception as e:  # noqa: BLE001 (recorded as an api error, or a budget stop)
-        result = run_from_trace(run_id, RUNS_DIR / f"{run_id}.jsonl")
-        if isinstance(e, BudgetError):
-            refused = f"the budget guard refused a call: {e}"
+    if routed(cfg):
+        cache = EstimateCache()
+        r = run_routed(task["prompt"], (client[0], cfg["model"]), (client[1], cfg["strong_model"]),
+                       guard, run_id, lambda: Toolbox(cache=cache), cfg["max_steps"],
+                       cfg["max_tokens"], RUNS_DIR)  # fmt: skip
+        result, toolbox, routing = r.run, r.toolbox, r.routing
+        refused = f"the budget guard refused a call: {r.refused}" if r.refused else None
+    else:
+        try:
+            result = run(task["prompt"], client, guard, cfg["model"], run_id, toolbox,
+                         cfg["max_steps"], cfg["max_tokens"], RUNS_DIR)  # fmt: skip
+        except Exception as e:  # noqa: BLE001 (recorded as an api error, or a budget stop)
+            result = run_from_trace(run_id, RUNS_DIR / f"{run_id}.jsonl")
+            if isinstance(e, BudgetError):
+                refused = f"the budget guard refused a call: {e}"
     wall = time.perf_counter() - start
     _, last = read_trace(result.trace_path)
     grading = grade(task, toolbox, result, suite, last)
     seed = cfg["seed"] + repeat
     paced = pacer.waited - waited if pacer else 0.0
-    rec = record(task, toolbox, result, grading, cfg["model"], seed, repeat, wall, rerun_of, paced)
+    model = routing["answered_by"] if routing else cfg["model"]
+    rec = record(task, toolbox, result, grading, model, seed, repeat, wall, rerun_of, paced)
+    if routing:
+        rec["routing"] = routing
+    note = f", escalated ({routing['reason']})" if routing and routing["escalated"] else ""
     print(f"r{repeat} {task['id']}: {'correct' if rec['correct'] else rec['category']}, "
-          f"steps {rec['steps']}, ${rec['cost_usd']:.5f}, {wall:.0f} s")  # fmt: skip
+          f"steps {rec['steps']}, ${rec['cost_usd']:.5f}, {wall:.0f} s{note}")  # fmt: skip
     return rec, refused
 
 
@@ -153,9 +207,17 @@ def run_eval(config_path, cfg, tasks, suite, guard, expected):
                     break
             if stopped:
                 break
-    (out / "summary.md").write_text(summarize(records, meta), encoding="utf-8")
+    (out / "summary.md").write_text(full_summary(records, meta), encoding="utf-8")
     print(f"results: {out}")
     return stopped
+
+
+def full_summary(records, meta):
+    """The eval's summary, and for a routed eval the routing section after it."""
+    text = summarize(records, meta)
+    if routed(meta["config"]):
+        text += routing_summary(records, meta["config"]["prediction"])
+    return text
 
 
 def rerun(path, guard, runs, reason):
@@ -246,7 +308,7 @@ def resummarize(path):
     path = Path(path)
     records = [json.loads(line) for line in (path / "runs.jsonl").read_text("utf-8").splitlines()]
     meta = json.loads((path / "meta.json").read_text(encoding="utf-8"))
-    (path / "summary.md").write_text(summarize(records, meta), encoding="utf-8")
+    (path / "summary.md").write_text(full_summary(records, meta), encoding="utf-8")
     print(f"wrote {path / 'summary.md'}")
 
 
@@ -327,7 +389,7 @@ def main():
     suite = load_suite(REPO_ROOT / cfg["tasks"])
     tasks = selected(cfg, suite)
     guard = Guard(cfg["phase"])
-    expected = estimate(cfg, tasks, guard)
+    expected = (estimate_routed if routed(cfg) else estimate)(cfg, tasks, guard)
     if not args.estimate and (stopped := run_eval(args.config, cfg, tasks, suite, guard, expected)):
         print(f"STOPPED: {stopped}", file=sys.stderr)
         raise SystemExit(2)
