@@ -274,8 +274,8 @@ def test_build_benchmark_errors(args, error):
 
 
 def test_build_benchmark_is_only_for_an_exact_match():
-    # In the eval every model used the benchmark adder for an adder on another layout (0/12),
-    # following the old rule "whenever the task names one of these families".
+    # In the eval 5 of 12 runs (all of Sonnet's) used the benchmark adder for an adder on another
+    # layout, following the old rule "whenever the task names one of these families".
     from qre_agent.agent import system_prompt
     from qre_agent.assumptions import load_assumptions
 
