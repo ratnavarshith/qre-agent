@@ -215,13 +215,15 @@ def run(
     switch_on_first_build=False,
     routing=None,
     guardrail=False,
+    guardrail_strip=True,
 ):
     """`otel`: also write the OpenTelemetry trace to <runs_dir>/otel/<run_id>.jsonl.
     `switch_on_first_build`: stop, with stop_reason SWITCHED, when the run's first tool call is
     build_circuit, before running it (cost routing, routing.py). `routing`: a dict that goes into
     the meta record and onto the root span as routing.<key> attributes. `guardrail`: wrap tool
     outputs in data delimiters, add the system-prompt rule and strip instruction-like lines from
-    string values (guardrail.py); the trace keeps the raw outputs and lists the stripped lines."""
+    string values (guardrail.py; not with `guardrail_strip=False`); the trace keeps the raw
+    outputs and lists the stripped lines."""
     toolbox = toolbox or Toolbox()
     toolbox.prompt = task
     trace_path = Path(runs_dir) / f"{run_id}.jsonl"
@@ -271,7 +273,7 @@ def run(
             {
                 "role": "system",
                 "content": system_prompt(toolbox.assumptions)
-                + (guard_rules.RULE.format(mark=guard_rules.MARK) if guardrail else ""),
+                + (guard_rules.rule(guardrail_strip) if guardrail else ""),
             },
             {"role": "user", "content": task},
         ]
@@ -357,7 +359,11 @@ def run(
                         tool_s = time.perf_counter() - start
                         span.set_attributes(tool_attributes(result, tool_s, toolbox.cache_hit))
                     totals["tool_s"] += tool_s
-                    shown, flagged = guard_rules.wrap(name, result) if guardrail else (result, [])
+                    shown, flagged = (
+                        guard_rules.wrap(name, result, guardrail_strip)
+                        if guardrail
+                        else (result, [])
+                    )
                     messages.append({"role": "tool", "tool_call_id": call["id"], "content": shown})
                     log(
                         "tool_call",

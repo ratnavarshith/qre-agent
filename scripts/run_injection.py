@@ -56,7 +56,7 @@ def estimate(cfg, cases, tasks, guard):
         for c in cases
     )
     print(f"{len(cases)} cases x {cfg['runs']} runs = {n} runs on {cfg['model']}, "
-          f"guardrail {'on' if cfg['guardrail'] else 'off'}")  # fmt: skip
+          f"{arm(cfg)}")  # fmt: skip
     print(f"expected: ${per_run * n:.4f} (${per_run:.5f} per run, mean of {len(past)} earlier "
           f"{cfg['profile']['model']} runs); stops above "
           f"${cfg['stop']['cost_factor'] * per_run * n:.4f}")  # fmt: skip
@@ -97,6 +97,14 @@ def defence(s, records, case, guardrail):
     return "verify" if failed else "revised"
 
 
+def guardrail_args(cfg):
+    """agent.run's guardrail arguments: none without the guardrail; `guardrail_strip: false`
+    keeps the delimiters and the rule and leaves the regex strip out."""
+    if not cfg["guardrail"]:
+        return {}
+    return {"guardrail": True, "guardrail_strip": cfg.get("guardrail_strip", True)}
+
+
 def run_case(cfg, case, task, suite, client, guard, run_id, repeat=0):
     """One graded, scored run. Returns its record and why the guard refused a call, if it did."""
     tamper, refused = Tamper(case), None
@@ -105,7 +113,7 @@ def run_case(cfg, case, task, suite, client, guard, run_id, repeat=0):
     try:
         result = run(task["prompt"], client, guard, cfg["model"], run_id, toolbox,
                      cfg["max_steps"], cfg["max_tokens"], run_eval.RUNS_DIR,
-                     **({"guardrail": True} if cfg["guardrail"] else {}))  # fmt: skip
+                     **guardrail_args(cfg))  # fmt: skip
     except Exception as e:  # noqa: BLE001 (recorded as an api error, or a budget stop)
         result = run_from_trace(run_id, run_eval.RUNS_DIR / f"{run_id}.jsonl")
         if isinstance(e, BudgetError):
@@ -182,6 +190,13 @@ def run_experiment(config_path, cfg, cases, tasks, suite, expected):
     return stopped
 
 
+def arm(cfg):
+    """The arm a config runs: no guardrail, delimiters + rule only, or the full guardrail."""
+    if not cfg["guardrail"]:
+        return "no guardrail"
+    return "full guardrail" if cfg.get("guardrail_strip", True) else "delimiters + rule only"
+
+
 def totals(records):
     delivered = [r for r in records if r["delivered"]]
     return {
@@ -225,7 +240,7 @@ def defences(rs):
 def summarize(records, meta):
     cfg, t = meta["config"], totals(records)
     lines = [
-        f"# Prompt-injection test, guardrail {'on' if cfg['guardrail'] else 'off'}",
+        f"# Prompt-injection test: {arm(cfg)}",
         "",
         (
             f"{meta['model']}, {meta['date']}, git {meta['git']['commit']} (dirty: "

@@ -81,3 +81,13 @@ def test_the_meta_records_both_commits(run_injection):
     got = run_injection.commits({"guardrail": True, "baseline": str(baseline.relative_to(run_injection.REPO_ROOT))})  # fmt: skip
     assert len(got["baseline_commit"]) == 40 and set(got) == {"baseline_commit", "guardrail_commit"}
     assert run_injection.commits({"guardrail": False}) == {}
+
+
+def test_guardrail_arguments_follow_the_config(run_injection):
+    args = run_injection.guardrail_args
+    assert args({"guardrail": False}) == {}
+    assert args({"guardrail": True}) == {"guardrail": True, "guardrail_strip": True}
+    assert args({"guardrail": True, "guardrail_strip": False}) == {
+        "guardrail": True,
+        "guardrail_strip": False,
+    }
