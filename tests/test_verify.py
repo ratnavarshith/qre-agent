@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 
 import pytest
 
@@ -241,3 +242,35 @@ def test_numbers_in_the_task_prompt_count_as_known():
     ]
     prompt = "How many physical qubits does an 8-bit ripple-carry adder need on each architecture?"
     assert verify(SURFACE, BICYCLE, text, prompt=prompt)["passed"]
+
+
+# Grader v2. SURFACE runs 1,934,400 ns and BICYCLE 75,294,213 ns.
+@pytest.mark.parametrize(
+    "written",
+    ["0.0019344 seconds", "0.0019344 second", "1.9344 milliseconds", "1,934.4 microseconds",
+     "1,934,400 nanoseconds", "1,934,400 ns", "0.075294213 seconds"],
+)  # fmt: skip
+def test_numbers_match_accepts_time_units_written_out(written):
+    assert numbers_match(f"Surface runs {written}", [SURFACE, BICYCLE]) is None
+
+
+@pytest.mark.parametrize("written", ["1.9344 seconds", "1934400 seconds", "1.9344 nanoseconds"])
+def test_numbers_match_still_rejects_a_wrong_value_in_a_written_out_unit(written):
+    assert numbers_match(f"Surface runs {written}", [SURFACE, BICYCLE])
+
+
+def test_float_noise_beyond_double_precision_matches():
+    # Gemini copied 0.0006471858333333334 as 0.00064718583333333343: the digits past what a
+    # double holds are noise, not a different number.
+    outputs = [{"error": 0.0006471858333333334, "qs": 98645.80684800001}]
+    assert numbers_match("error 0.00064718583333333343, 98645.806848000007 qs", outputs) is None
+    assert numbers_match("error 0.00064718593333333343", outputs)  # differs at the 9th digit
+
+
+def test_fields_match_tolerates_float_noise():
+    estimate = {"result_id": "r1", "architecture": "surface", "physical_qubits": Decimal(140015),
+                "runtime_ns": Decimal(1934400),
+                "physical_qubit_seconds": Decimal("270.84501600000004199")}  # fmt: skip
+    assert fields_match([estimate], {"r1": SURFACE}, ["r1"]) is None
+    estimate["physical_qubit_seconds"] = Decimal("270.8450161")
+    assert fields_match([estimate], {"r1": SURFACE}, ["r1"])

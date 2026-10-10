@@ -19,9 +19,13 @@ REPORTED = ("physical_qubits", "runtime_ns", "physical_qubit_seconds")
 NUMBER = re.compile(
     r"(?<![\w.])(?P<m>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
     r"(?:[eE](?P<e>[+-]?\d+)|\s*[×x]\s*10\^(?P<x>[+-]?\d+)|\^(?P<p>[+-]?\d+))?"
-    r"(?:\s?(?P<u>ms|[µμ]s|us|s)(?!\w))?"
+    r"(?:\s?(?P<u>(?:nano|micro|milli)?seconds?|ns|ms|[µμ]s|us|s)(?!\w))?"
 )
-UNIT_SHIFT = {"ms": -6, "µs": -3, "μs": -3, "us": -3, "s": -9}  # power of ten from ns to the unit
+UNIT_SHIFT = {"ns": 0, "ms": -6, "µs": -3, "μs": -3, "us": -3, "s": -9}  # from ns to the unit
+WORDS = {"nano": "ns", "micro": "µs", "milli": "ms", "": "s"}  # "milliseconds" is "ms"
+# A double holds about 16 significant digits; digits written past that are noise from printing
+# the binary value, not a different number, so values within this relative distance match.
+FLOAT_REL = Decimal("1e-12")
 
 
 def same_circuit(surface, bicycle):
@@ -64,8 +68,17 @@ def _written(match):
 
 
 def _close(written, value):
-    """value equals written at the precision written: 19.5 matches 19.509, 1346 not 1346.72."""
-    return abs(value - written) <= Decimal(1).scaleb(written.as_tuple().exponent) / 2
+    """value equals written at the precision written: 19.5 matches 19.509, 1346 not 1346.72.
+    Past a double's precision, FLOAT_REL: 0.00064718583333333343 matches 0.0006471858333333334."""
+    precision = Decimal(1).scaleb(written.as_tuple().exponent) / 2
+    return abs(value - written) <= max(precision, FLOAT_REL * abs(value))
+
+
+def _unit(u):
+    """The unit as a UNIT_SHIFT key: "milliseconds" -> "ms"; None without one."""
+    if u and u.endswith(("second", "seconds")):
+        return WORDS[u[: u.index("second")]]
+    return u
 
 
 def _leaves(value):
@@ -128,7 +141,7 @@ def numbers_match(text, outputs):
     known = set(_leaves(outputs))
 
     def matches(m):
-        shift = UNIT_SHIFT.get(m["u"], 0)
+        shift = UNIT_SHIFT.get(_unit(m["u"]), 0)
         return any(_close(_written(m), t.scaleb(shift)) for t in known)
 
     unmatched = [m[0] for m in NUMBER.finditer(text.replace("−", "-")) if not matches(m)]
