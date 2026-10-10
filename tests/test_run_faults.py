@@ -102,3 +102,16 @@ def test_with_the_primary_down_every_call_is_answered_by_the_fallback(run_faults
     assert rec["answered"] == rec["fallback_answered"] == 3 and rec["models"] == {"fake2": 3}
     assert rec["fallbacks"] == 3 and rec["retries"] >= 9  # 3 retries before each fallback
     assert "| 3 of 3 |" in (out / "summary.md").read_text("utf-8")
+
+
+def test_the_summary_includes_hand_written_findings(run_faults):
+    rec = {"rate": 0.0, "reliability": True, "correct": True, "category": None, "cost_usd": 0.01,
+           "latency_s": 5.0, "retries": 0, "fallbacks": 0, "injected": {}, "answered": 3,
+           "fallback_answered": 0, "models": {"fake": 3}}  # fmt: skip
+    meta = {"model": "fake", "date": "d", "git": {"commit": "c", "dirty": False},
+            "config": CFG | {"injection_rates": [0.0], "reliability": [True]},
+            "versions": {}, "hardware": {}}  # fmt: skip
+    assert "## Findings" not in run_faults.summarize([rec], meta)
+    findings = "- one finding"
+    text = run_faults.summarize([rec], meta, findings + chr(10))
+    assert "## Findings" + chr(10) * 2 + findings + chr(10) in text

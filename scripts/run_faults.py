@@ -192,7 +192,8 @@ def wilson(k, n, z=1.96):
     return max(0.0, centre - half), min(1.0, centre + half)
 
 
-def summarize(records, meta):
+def summarize(records, meta, findings=""):
+    """The summary table; `findings` is hand-written text (findings.md next to the results)."""
     cfg = meta["config"]
     lines = [
         "# Fault-injection experiment",
@@ -239,6 +240,7 @@ def summarize(records, meta):
             "the fallback, answered or not; 'answered by fallback' counts the replies it gave."
         ),
         "",
+        *(["## Findings", "", findings.strip(), ""] if findings.strip() else []),
         f"Versions: {json.dumps(meta['versions'])}",
         f"Hardware: {json.dumps(meta['hardware'])}",
     ]
@@ -249,13 +251,17 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("config", nargs="?")
     parser.add_argument("--estimate", action="store_true", help="print the cost and stop")
-    parser.add_argument("--summarize", metavar="DIR", help="rewrite DIR/summary.md")
+    parser.add_argument(
+        "--summarize", metavar="DIR", help="rewrite DIR/summary.md, with DIR/findings.md"
+    )
     args = parser.parse_args()
     if args.summarize:
         path = Path(args.summarize)
         records = [json.loads(x) for x in (path / "runs.jsonl").read_text("utf-8").splitlines()]
         meta = json.loads((path / "meta.json").read_text(encoding="utf-8"))
-        (path / "summary.md").write_text(summarize(records, meta), encoding="utf-8")
+        notes = path / "findings.md"
+        findings = notes.read_text(encoding="utf-8") if notes.exists() else ""
+        (path / "summary.md").write_text(summarize(records, meta, findings), encoding="utf-8")
         return
     cfg = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
     suite = load_suite(REPO_ROOT / cfg["tasks"])
