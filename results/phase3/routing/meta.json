@@ -4,8 +4,8 @@
   "results/eval/anthropic_claude-sonnet-5/2026-10-09/runs-v2.jsonl": "40514585060f4af2c67dd79c65b545343b97e5f2e4dbdb11c733bc5b5dea0934"
  },
  "git": {
-  "commit": "72140cd4b689c0d9ab2d54317f4adfc14d26f713",
-  "dirty": true
+  "commit": "238698e7ab9cea6b38629c821fd426d9dc67b67a",
+  "dirty": false
  },
  "config": {
   "primary": "results/eval/google_gemini-2.5-flash/2026-10-09/runs-v2.jsonl",
