@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:  # also runs the eval gate
 
 permissions:
   contents: read
@@ -86,3 +87,116 @@ jobs:
 
       - name: pytest
         run: pytest -q -rs
+
+  # Paths whose change can change the agent's answers: the code (the system prompt is in
+  # src/qre_agent/agent.py), the evals, and what feeds them.
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    outputs:
+      agent: ${{ steps.diff.outputs.agent }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - id: diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          agent=false
+          for f in $(git diff --name-only "$BASE_SHA" HEAD); do
+            case "$f" in
+              src/*|evals/*|assumptions/*|scripts/run_eval.py|scripts/ci_gate.py|budgets.yaml|requirements.txt|pyproject.toml|.github/workflows/ci.yml)
+                agent=true ;;
+            esac
+          done
+          echo "agent=$agent" >> "$GITHUB_OUTPUT"
+
+  # Runs 10 eval tasks on Gemini 2.5 Flash with the repository secret OPENROUTER_API_KEY (a key with
+  # a hard credit limit) and fails if the agent regressed, or if it could not run (see
+  # scripts/ci_gate.py). Skipped, not failed, when no agent path changed.
+  eval-gate:
+    needs: [test, changes]
+    if: ${{ !cancelled() && needs.test.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.agent == 'true') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    concurrency:
+      group: eval-gate-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install
+        run: |
+          pip install -r requirements.txt
+          pip install -e . --no-deps
+
+      - name: Check out the bicycle compiler
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.COMPILER_REPO }}
+          ref: ${{ env.COMPILER_COMMIT }}
+          path: bicycle-compiler
+
+      # The test job saves this cache; this job only reads it.
+      - name: Restore compiler build and lookup tables
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            bicycle-compiler/target
+            ~/.cargo/registry
+            cache
+          key: bicycle-${{ runner.os }}-${{ env.COMPILER_COMMIT }}-${{ hashFiles('ci/bicycle-Cargo.lock') }}
+
+      - name: Build the compiler
+        working-directory: bicycle-compiler
+        run: |
+          cp "$GITHUB_WORKSPACE/ci/bicycle-Cargo.lock" Cargo.lock
+          cargo build --release --locked -F bicycle_compiler/rsgridsynth -p bicycle_compiler -p bicycle_numerics
+
+      - name: Generate lookup tables
+        run: |
+          mkdir -p cache
+          pids=""
+          for code in gross two-gross; do
+            if [ ! -s "cache/table_$code" ]; then
+              "$QRE_COMPILER_DIR/bicycle_compiler" "$code" generate "cache/table_$code" &
+              pids="$pids $!"
+            fi
+          done
+          for pid in $pids; do wait "$pid"; done
+
+      # Estimates are keyed on the circuit, assumptions, versions and estimator code, so a hit is
+      # never stale; the key includes the estimator sources only to start a fresh cache when they
+      # change. Each run saves under its own run id, so new estimates are kept.
+      - name: Restore and save the estimate cache
+        uses: actions/cache@v5
+        with:
+          path: cache/estimates
+          key: estimates-${{ runner.os }}-${{ env.COMPILER_COMMIT }}-${{ hashFiles('src/qre_agent/surface.py', 'src/qre_agent/bicycle.py', 'src/qre_agent/pbc.py', 'src/qre_agent/compiler.py', 'requirements.txt') }}-${{ github.run_id }}
+          restore-keys: |
+            estimates-${{ runner.os }}-${{ env.COMPILER_COMMIT }}-${{ hashFiles('src/qre_agent/surface.py', 'src/qre_agent/bicycle.py', 'src/qre_agent/pbc.py', 'src/qre_agent/compiler.py', 'requirements.txt') }}-
+
+      - name: Grader self-test (no API calls)
+        run: python scripts/run_eval.py --self-test
+
+      - name: Eval gate
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: python scripts/ci_gate.py evals/ci-gate.yaml
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-gate
+          path: |
+            results/ci/gate
+            runs
+          if-no-files-found: ignore
