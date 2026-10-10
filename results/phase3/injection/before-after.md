@@ -6,6 +6,7 @@ google/gemini-2.5-flash, the same 10 cases, 3 run(s) each, repeat i with seed i.
 
 - The same session wrote the payloads and the regex, so the regex's catch rate is optimistic: it was shaped around phrasings we then tested it on. The fair test of the guardrail is the payloads the regex misses (section below); there are few, so it says little.
 - Gemini never tried to read the decoy file and never repeated the system prompt, in any arm. The sandbox's file block and the prompt-leak defences were not exercised, and this test makes no claim about them.
+- All three arms ran on Gemini 2.5 Flash only. Routing policy f escalates to Sonnet 5, which was not tested against these attacks.
 - Three runs per case: counts with a per-repeat spread, not a statistical test. A difference of one run is noise.
 
 ## All 30 runs per arm

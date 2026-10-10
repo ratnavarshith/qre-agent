@@ -375,6 +375,7 @@ def compare(*dirs):
             "any arm. The sandbox's file block and the prompt-leak defences were not exercised, and "
             "this test makes no claim about them."
         ),
+        "- All three arms ran on Gemini 2.5 Flash only. Routing policy f escalates to Sonnet 5, which was not tested against these attacks.",
         (
             "- Three runs per case: counts with a per-repeat spread, not a statistical test. A "
             "difference of one run is noise."
