@@ -1,6 +1,7 @@
 """The agent loop: an LLM calls the tools in tools.py for up to `max_steps` completions, then
 gives a structured final answer, which the verifier checks. Every message, tool call, token
-count, cost and latency goes to runs/<run_id>.jsonl. See docs/agent-design.md."""
+count, cost and latency goes to runs/<run_id>.jsonl, and an OpenTelemetry trace of the run (a span
+per LLM call and per tool call) to runs/otel/<run_id>.jsonl. See docs/agent-design.md."""
 
 import json
 import platform
@@ -11,6 +12,9 @@ from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
 
+from opentelemetry import context, trace
+
+from . import tracing
 from .compiler import compiler_versions
 from .spend import REPO_ROOT, cost
 from .surface import PACKAGES
@@ -77,6 +81,34 @@ def system_prompt(a):
         gate=a.gate_time_ns,
         measurement=a.measurement_time_ns,
     )
+
+
+def llm_attributes(model, usage, latency):
+    """Span attributes of an LLM call that returned."""
+    return {
+        "gen_ai.request.model": model,
+        "gen_ai.usage.input_tokens": usage["input_tokens"],
+        "gen_ai.usage.cached_tokens": usage["cached_tokens"],
+        "gen_ai.usage.output_tokens": usage["output_tokens"],
+        "cost_usd": usage["cost_usd"],
+        "latency_s": latency,
+    }
+
+
+def llm_failure(model, error, latency):
+    """Span attributes of an LLM call that raised."""
+    return {"gen_ai.request.model": model, "error.type": type(error).__name__, "latency_s": latency}
+
+
+def tool_attributes(result, latency):
+    """Span attributes of a tool call. A failed call's output is {"error": "<Exception>: ..."}
+    (estimates have a numeric `error`, the logical error); error.type is the exception name."""
+    out = json.loads(result)
+    attributes = {"latency_s": latency}
+    if list(out) == ["error"]:
+        bad_json = out["error"].startswith("arguments are not valid JSON")
+        attributes["error.type"] = "JSONDecodeError" if bad_json else out["error"].split(":")[0]
+    return attributes
 
 
 @dataclass
@@ -157,7 +189,9 @@ def run(
     max_tokens=MAX_TOKENS,
     runs_dir=RUNS_DIR,
     verify_retries=VERIFY_RETRIES,
+    otel=True,
 ):
+    """`otel`: also write the OpenTelemetry trace to <runs_dir>/otel/<run_id>.jsonl."""
     toolbox = toolbox or Toolbox()
     toolbox.prompt = task
     trace_path = Path(runs_dir) / f"{run_id}.jsonl"
@@ -172,6 +206,14 @@ def run(
         ),
         0,
     ) | {"cost_usd": 0.0, "reported_cost_usd": 0.0, "llm_s": 0.0, "tool_s": 0.0}
+
+    spans = tracing.provider(Path(runs_dir) / "otel" / f"{run_id}.jsonl") if otel else None
+    tracer = spans.get_tracer(__name__) if spans else tracing.NO_OP
+    root = tracer.start_span(
+        "agent_run",
+        attributes={"run_id": run_id, "gen_ai.request.model": model, "phase": guard.phase or ""},
+    )
+    attached = context.attach(trace.set_span_in_context(root))
 
     with trace_path.open("w", encoding="utf-8") as f:
 
@@ -204,25 +246,31 @@ def run(
         try:
             while steps < max_steps:
                 steps += 1
-                start = time.perf_counter()
-                reply = guard.complete(client, model, messages, max_tokens)
-                latency = time.perf_counter() - start
-                usd = cost(
-                    guard.prices[model],
-                    reply.input_tokens,
-                    reply.output_tokens,
-                    reply.cached_tokens,
-                    reply.cache_write_tokens,
-                )
-                usage = {
-                    "input_tokens": reply.input_tokens,
-                    "cached_tokens": reply.cached_tokens,
-                    "cache_write_tokens": reply.cache_write_tokens,
-                    "output_tokens": reply.output_tokens,
-                    "reasoning_tokens": getattr(reply, "reasoning_tokens", 0),
-                    "cost_usd": usd,
-                    "reported_cost_usd": reply.reported_cost_usd,
-                }
+                with tracer.start_as_current_span("llm_call", attributes={"step": steps}) as span:
+                    start = time.perf_counter()
+                    try:
+                        reply = guard.complete(client, model, messages, max_tokens)
+                    except Exception as e:
+                        span.set_attributes(llm_failure(model, e, time.perf_counter() - start))
+                        raise
+                    latency = time.perf_counter() - start
+                    usd = cost(
+                        guard.prices[model],
+                        reply.input_tokens,
+                        reply.output_tokens,
+                        reply.cached_tokens,
+                        reply.cache_write_tokens,
+                    )
+                    usage = {
+                        "input_tokens": reply.input_tokens,
+                        "cached_tokens": reply.cached_tokens,
+                        "cache_write_tokens": reply.cache_write_tokens,
+                        "output_tokens": reply.output_tokens,
+                        "reasoning_tokens": getattr(reply, "reasoning_tokens", 0),
+                        "cost_usd": usd,
+                        "reported_cost_usd": reply.reported_cost_usd,
+                    }
+                    span.set_attributes(llm_attributes(model, usage, latency))
                 for k, v in usage.items():
                     totals[k] += v or 0
                 totals["llm_s"] += latency
@@ -244,13 +292,16 @@ def run(
                 for call in calls:
                     start = time.perf_counter()
                     name = call["function"]["name"]
-                    try:
-                        arguments = json.loads(call["function"]["arguments"] or "{}")
-                        result = toolbox.call(name, arguments)
-                    except json.JSONDecodeError as e:
-                        arguments = call["function"]["arguments"]
-                        result = json.dumps({"error": f"arguments are not valid JSON: {e}"})
-                    tool_s = time.perf_counter() - start
+                    attributes = {"step": steps, "tool.name": name, "tool.call_id": call["id"]}
+                    with tracer.start_as_current_span("tool_call", attributes=attributes) as span:
+                        try:
+                            arguments = json.loads(call["function"]["arguments"] or "{}")
+                            result = toolbox.call(name, arguments)
+                        except json.JSONDecodeError as e:
+                            arguments = call["function"]["arguments"]
+                            result = json.dumps({"error": f"arguments are not valid JSON: {e}"})
+                        tool_s = time.perf_counter() - start
+                        span.set_attributes(tool_attributes(result, tool_s))
                     totals["tool_s"] += tool_s
                     messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
                     log(
@@ -314,6 +365,18 @@ def run(
                 verify_passed_after_retry=after_retry,
                 totals=totals,
             )
+            root.set_attributes(
+                {
+                    "stop_reason": stop_reason,
+                    "steps": steps,
+                    "verify_passed": bool(verification and verification["passed"]),
+                    "cost_usd": totals["cost_usd"],
+                }
+            )
+            root.end()
+            context.detach(attached)
+            if spans:
+                spans.shutdown()
     return Run(
         run_id, stop_reason, answer, verification, steps, totals, trace_path, first_try, after_retry
     )
