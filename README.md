@@ -82,6 +82,7 @@ Bicycle uses 23 to 800x fewer qubits but runs 50 to 140x longer, because it has 
 - **Surface is a frontier, bicycle is one point.** For the surface code I take the point on v3's qubits-vs-runtime frontier with the smallest qubit-seconds. The bicycle architecture here has one layout and one factory, so there is nothing to optimise. This favours surface a bit.
 - **Both sides use gridsynth T counts.** The surface estimate is pinned to the T count that the compiler's gridsynth needs at the same precision, so the architectures pay the same per-rotation cost. v3's own synthesis model uses far fewer T gates per rotation (about 4x at these precisions). `synthesis: native` switches to that for the surface side; I haven't put native-mode results in the table.
 - **Their Qiskit parser has two bugs, so I don't use it.** `scripts/qiskit_parser.py` writes the wrong rotation angle (+t·c instead of −2·t·c; I reported this on upstream issue #26) and puts rotations on the wrong qubits. `src/qre_agent/pbc.py` is my replacement and has tests for both cases.
+- **Bicycle runtime numbers vary by about ±1% with the measurement table the compiler generated.** Its table search breaks ties in `HashMap` order, so every generated table differs; qubits, T counts and pass/fail don't change. The sha256 of the tables is recorded with new results (the results above predate that).
 - The error totals are sums of per-instruction errors (union bound), so they are conservative. Only tested on Windows.
 
 ## Phase 2: the agent
