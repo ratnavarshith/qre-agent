@@ -146,6 +146,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("config")
     args = parser.parse_args()
+    git = git_state()  # before writing: the results directory is tracked
     cfg = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
     primary, strong = load(cfg["primary"]), load(cfg["strong"])
     if primary.keys() != strong.keys():
@@ -163,7 +164,7 @@ def main():
         p: hashlib.sha256((REPO_ROOT / p).read_bytes()).hexdigest()
         for p in (cfg["primary"], cfg["strong"])
     }
-    meta = {"inputs_sha256": inputs, "git": git_state(), "config": cfg}
+    meta = {"inputs_sha256": inputs, "git": git, "config": cfg}
     (out / "meta.json").write_text(json.dumps(meta, indent=1) + "\n", encoding="utf-8")
 
     n_tasks = len({t for t, _ in primary})

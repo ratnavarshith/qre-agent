@@ -109,6 +109,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("config")
     args = parser.parse_args()
+    env = environment(Toolbox().assumptions)  # before writing: the results are tracked
     cfg = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
     runs, mismatches = [], 0
     for directory in cfg["evals"]:
@@ -124,7 +125,6 @@ def main():
     out = REPO_ROOT / cfg["results_dir"]
     out.mkdir(parents=True, exist_ok=True)
     shutil.copy(args.config, out / "config.yaml")
-    env = environment(Toolbox().assumptions)
     (out / "meta.json").write_text(json.dumps(env | {"config": cfg}, indent=1) + "\n")
 
     calls = [c for r in runs for c in r["calls"]]
