@@ -136,3 +136,16 @@ def test_a_malformed_tool_call_goes_back_to_the_agent_as_a_tool_error(guard, tmp
     assert tool["result"]["error"].startswith("arguments are not valid JSON")
     first = next(r for r in trace(result.trace_path) if r["type"] == "llm_call")
     assert (first["cost_usd"], first["faults"]) == (0.0, ["malformed_json"])
+
+
+def test_with_reliability_a_malformed_tool_call_is_retried_and_no_step_is_lost(guard, tmp_path):  # noqa: F811
+    inj = Injected(guard, 0.0, seed=0)
+    draws = iter(["malformed_json"])  # on the first call only
+    inj.draw = lambda: next(draws, None)
+    result, client = go(Reliable(inj, sleep=Sleeps()), tmp_path, "mal-on")
+    assert result.verification["passed"] and client.calls == 3 and result.steps == 3
+    records = trace(result.trace_path)
+    assert not any(isinstance(r.get("result", {}).get("error"), str) for r in records)
+    first = next(r for r in records if r["type"] == "llm_call")
+    assert (first["retries"], first["faults"]) == (1, ["malformed_json"])
+    assert inj.counts == {"malformed_json": 1}

@@ -15,12 +15,12 @@ from .spend import Reply, api_key
 URL = "https://openrouter.ai/api/v1/chat/completions"
 TIMEOUT_S = 180
 CACHE_CONTROL = {"type": "ephemeral"}
-RETRYABLE = ("timeout", "rate_limit", "server", "missing_usage")
+RETRYABLE = ("timeout", "rate_limit", "server", "missing_usage", "malformed_json")
 
 
 class ProviderError(RuntimeError):
-    """A failed LLM call. `kind` is timeout, rate_limit (429), server (5xx) or missing_usage, which
-    reliability.Reliable retries, or client (other 4xx) or connection, which it doesn't.
+    """A failed LLM call. `kind` is timeout, rate_limit (429), server (5xx), missing_usage or
+    malformed_json (a tool call whose arguments aren't JSON), which reliability.Reliable retries, or client (other 4xx) or connection, which it doesn't.
     `retry_after` is the provider's Retry-After in seconds, if it sent one."""
 
     def __init__(self, kind, message, status=None, retry_after=None):

@@ -15,7 +15,7 @@ from test_agent import ANSWER, ESTIMATE, FakeClient, StubToolbox, reply, trace
 from qre_agent.agent import run
 from qre_agent.claude import Claude, to_anthropic
 from qre_agent.claude import parse as parse_claude
-from qre_agent.llm import OpenRouter, ProviderError, parse, retry_after
+from qre_agent.llm import ChatReply, OpenRouter, ProviderError, parse, retry_after
 from qre_agent.reliability import Reliable, backoff, build
 from qre_agent.spend import Guard, read_log
 from qre_agent.tools import SCHEMAS, Toolbox, ToolTimeout, run_in_child
@@ -307,3 +307,66 @@ def test_an_estimate_that_times_out_is_an_error_and_stores_nothing():
     out = json.loads(tb.call("estimate_surface", {"circuit_id": "c1"}))
     assert out == {"error": "ToolTimeout: estimate_surface timed out after 0.01 s"}
     assert tb.results == {}
+
+
+# ---- malformed tool-call JSON ----
+
+
+def bad_reply(arguments='{"code": "x'):
+    call = {
+        "id": "c",
+        "type": "function",
+        "function": {"name": "build_circuit", "arguments": arguments},
+    }
+    message = {"role": "assistant", "content": "", "tool_calls": [call]}
+    return ChatReply("", 1000, 100, message=message)
+
+
+def test_a_malformed_reply_is_resent_with_the_same_request_and_each_attempt_is_billed(guards):
+    guard, _ = guards
+    messages = [{"role": "user", "content": "hi"}]
+
+    class Client:
+        def __init__(self):
+            self.sent, self.replies = [], [bad_reply(), bad_reply(), reply("fine")]
+
+        def complete(self, model, messages, max_tokens):
+            self.sent.append(json.dumps(messages))
+            return self.replies.pop(0)
+
+    client, sleeps = Client(), Sleeps()
+    out = Reliable(guard, sleep=sleeps).complete(client, "fake", messages, 100)
+    assert out.text == "fine" and (out.retries, out.faults) == (2, ("malformed_json",) * 2)
+    assert len(set(client.sent)) == 1 and len(client.sent) == 3 and len(sleeps) == 2
+    assert [r["status"] for r in read_log(guard.log_path)] == ["ok"] * 3  # each was billed
+
+
+def test_a_malformed_reply_falls_back_after_the_retries_and_is_returned_if_still_bad(guards):
+    guard, phase3 = guards
+
+    calls = []
+
+    class Always:
+        def __init__(self, replies):
+            self.replies = replies
+
+        def complete(self, model, messages, max_tokens):
+            calls.append(model)
+            return self.replies[0]
+
+    r = Reliable(guard, (phase3, Always([reply("from the fallback")]), "fake2"), sleep=Sleeps())
+    out = r.complete(Always([bad_reply()]), "fake", [], 10)
+    assert (out.text, out.model, out.fallback, out.retries) == (
+        "from the fallback",
+        "fake2",
+        True,
+        3,
+    )
+    assert len(calls) == 5  # 4 on the primary, then the fallback
+
+    both = (phase3, Always([bad_reply()]), "fake2")
+    out = Reliable(guard, both, max_retries=1, sleep=Sleeps()).complete(
+        Always([bad_reply()]), "fake", [], 10
+    )
+    assert out.message["tool_calls"] and (out.model, out.fallback) == ("fake2", True)
+    assert out.faults == ("malformed_json",) * 4  # the agent turns it into a tool error
