@@ -15,7 +15,7 @@ from pathlib import Path
 from opentelemetry import context, trace
 
 from . import tracing
-from .compiler import compiler_versions
+from .compiler import compiler_versions, measurement_table_hashes
 from .spend import REPO_ROOT, cost
 from .surface import PACKAGES
 from .tools import SCHEMAS, Toolbox
@@ -161,13 +161,14 @@ def git_state(root=REPO_ROOT):
 
 
 def environment(a):
-    """Versions, hardware and git state recorded with every run."""
+    """Versions, the measurement tables' hashes, hardware and git state recorded with every run."""
     try:
         compiler = compiler_versions(a)
     except FileNotFoundError:
         compiler = {}
     return {
         "versions": {pkg: version(pkg) for pkg in PACKAGES} | compiler,
+        "measurement_tables": measurement_table_hashes(a),  # the bicycle numbers depend on them
         "hardware": {
             "platform": platform.platform(),
             "processor": platform.processor(),

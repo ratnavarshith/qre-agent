@@ -16,7 +16,7 @@ import yaml
 
 from qre_agent import load_assumptions
 from qre_agent.circuits import FAMILIES
-from qre_agent.compiler import compiler_versions, gridsynth_t_counts
+from qre_agent.compiler import compiler_versions, gridsynth_t_counts, measurement_table_hashes
 from qre_agent.pbc import to_pbc
 from qre_agent.surface import SYNTHESIS_SHARE, _rotation_angles, prepare
 
@@ -54,6 +54,7 @@ def main(config_path, out_path):
     meta = {
         "packages": {d.metadata["Name"].lower(): d.version for d in distributions()},
         "compiler": compiler_versions(a),
+        "measurement_tables": measurement_table_hashes(a),
         "platform": platform.platform(),
         "python": platform.python_version(),
     }

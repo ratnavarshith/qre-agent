@@ -105,6 +105,7 @@ def test_answer_is_verified_and_the_run_is_traced(guard, tmp_path):
                      "tool_call", "tool_call", "llm_call", "auto_verify", "final"]  # fmt: skip
     meta, final = records[0], records[-1]
     assert meta["model"] == "fake" and meta["max_steps"] == 12 and "qiskit" in meta["versions"]
+    assert isinstance(meta["measurement_tables"], dict)  # hashes of the compiler's tables
     assert records[1]["message"]["content"].startswith("You estimate")
     assert records[4]["result"]["circuit_id"] == "c1"
     assert all("latency_s" in r for r in records if r["type"] in ("llm_call", "tool_call"))

@@ -299,3 +299,38 @@ def test_results_record_compiler_identity_not_machine_paths():
         assert re.fullmatch(r"[0-9a-f]{40}(-dirty)?", r["versions"]["bicycle_compiler_commit"])
         assert r["versions"]["cargo_lock_sha256"] == lock_sha
         assert "compiler_dir" not in r["assumptions"]
+
+
+def test_table_hash_is_sha256_of_the_file_and_follows_changes(tmp_path):
+    from qre_agent.compiler import table_sha256
+
+    table = tmp_path / "table_gross"
+    table.write_bytes(b"abc" * 1000)
+    assert table_sha256(table) == hashlib.sha256(b"abc" * 1000).hexdigest()
+    table.write_bytes(b"abd" * 1000)  # a regenerated table: same size, other contents
+    assert table_sha256(table) == hashlib.sha256(b"abd" * 1000).hexdigest()
+
+
+def test_table_hashes_cover_the_tables_in_the_cache_dir(tmp_path):
+    from dataclasses import replace
+
+    from qre_agent.compiler import measurement_table_hashes
+
+    (tmp_path / "table_gross").write_bytes(b"1")
+    (tmp_path / "table_two-gross").write_bytes(b"2")
+    (tmp_path / "notes.txt").write_bytes(b"3")
+    a = replace(A, cache_dir=str(tmp_path))
+    assert measurement_table_hashes(a) == {
+        "gross": hashlib.sha256(b"1").hexdigest(),
+        "two-gross": hashlib.sha256(b"2").hexdigest(),
+    }
+    assert measurement_table_hashes(replace(A, cache_dir=str(tmp_path / "none"))) == {}
+
+
+@pytest.mark.compiler
+def test_a_bicycle_result_records_the_table_it_used():
+    from qre_agent.compiler import measurement_table
+
+    r = estimate_bicycle(qft(4), A)
+    path = measurement_table(A, A.bicycle_code)
+    assert r["measurement_table_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()

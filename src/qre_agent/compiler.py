@@ -38,6 +38,31 @@ def measurement_table(a, code):
     return path
 
 
+_TABLE_SHA256 = {}  # (path, size, mtime) -> hash: the tables are 145 MB each
+
+
+def table_sha256(path):
+    """sha256 of a measurement table. The compiler's table search breaks cost ties in HashMap
+    order, so two generated tables differ (and bicycle timesteps with them, by about 1%): every
+    result depends on which table it used."""
+    path = Path(path)
+    stat = path.stat()
+    key = (str(path), stat.st_size, stat.st_mtime_ns)
+    if key not in _TABLE_SHA256:
+        digest = hashlib.sha256()
+        with path.open("rb") as f:
+            while chunk := f.read(1 << 20):
+                digest.update(chunk)
+        _TABLE_SHA256[key] = digest.hexdigest()
+    return _TABLE_SHA256[key]
+
+
+def measurement_table_hashes(a):
+    """{code: sha256} of the measurement tables in the cache directory (none if it has none)."""
+    tables = sorted(Path(a.cache_dir).glob("table_*")) if Path(a.cache_dir).is_dir() else []
+    return {t.name.removeprefix("table_"): table_sha256(t) for t in tables if t.is_file()}
+
+
 def compile_pbc(a, code, ops, accuracy):
     """Compile PBC ops to bicycle instructions. Returns the compiler's stdout, one line per op."""
     stdin = "".join(json.dumps(op, separators=(",", ":")) + "\n" for op in ops)

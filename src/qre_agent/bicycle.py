@@ -8,7 +8,14 @@ import math
 from importlib.metadata import version
 
 from .assumptions import load_assumptions
-from .compiler import compile_pbc, compiler_versions, run, t_injections
+from .compiler import (
+    compile_pbc,
+    compiler_versions,
+    measurement_table,
+    run,
+    t_injections,
+    table_sha256,
+)
 from .pbc import to_pbc
 from .surface import NS, PACKAGES, SYNTHESIS_SHARE
 
@@ -137,6 +144,7 @@ def estimate_bicycle(circuit, assumptions=None):
         "measurements": len(ops) - len(rotation_ops),
         "synthesis_epsilon": eps if rotations else None,
         "code": code,
+        "measurement_table_sha256": table_sha256(measurement_table(a, code)),
         "modules": modules,
         "timesteps": timesteps,
         "instruction_counts": counts,

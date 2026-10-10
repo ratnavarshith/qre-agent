@@ -30,7 +30,10 @@ TOOL_TIMEOUT_S = 180  # an estimate; the slowest seen in the evals took under 1 
 RUNNER = Path(__file__).with_name("sandbox_runner.py")
 STANDARD_GATES = set(get_standard_gate_name_mapping())
 BICYCLE_P = {"1e-3": 1e-3, "1e-4": 1e-4}  # strings: Gemini allows enum on STRING only
-DROP = ("frontier",)  # every point on surface's Pareto frontier; long and not needed by the agent
+DROP = (  # not needed by the agent: long, or provenance for the traces and the estimate cache
+    "frontier",  # every point on surface's Pareto frontier
+    "measurement_table_sha256",
+)
 
 
 class SandboxError(Exception):

@@ -367,3 +367,10 @@ def test_sandbox_lets_the_agent_print_non_ascii():
     # A print() of π in the agent's code went to a cp1252 stdout and raised (one eval rerun).
     code = 'from qiskit import QuantumCircuit\nprint("Rz(π/7) on |0101⟩")\ncircuit = QuantumCircuit(1)\n'
     assert run_circuit_code(code).num_qubits == 1
+
+
+def test_the_agent_does_not_see_the_measurement_table_hash():
+    tb = Toolbox()
+    tb.circuits["c1"] = QuantumCircuit(1)
+    out = tb._record("bicycle", "c1", {"timesteps": 3, "measurement_table_sha256": "ab" * 32})
+    assert "measurement_table_sha256" not in out and out["timesteps"] == 3

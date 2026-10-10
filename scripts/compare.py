@@ -20,6 +20,7 @@ from matplotlib.lines import Line2D
 from qre_agent import estimate_bicycle, estimate_surface, load_assumptions
 from qre_agent.bicycle import PAPER_ERRORS, instruction_error
 from qre_agent.circuits import FAMILIES
+from qre_agent.compiler import measurement_table_hashes
 
 ROOT = Path(__file__).resolve().parents[1]
 KEEP = (
@@ -199,6 +200,7 @@ def main(config_path):
     meta = {
         "assumptions": base.as_dict(),
         "versions": versions,
+        "measurement_tables": measurement_table_hashes(base),
         "seeds": {"transpile": base.seed, "rsgridsynth": "1 (fixed in compiler small_angle.rs)"},
         "hardware": {
             "platform": platform.platform(),
