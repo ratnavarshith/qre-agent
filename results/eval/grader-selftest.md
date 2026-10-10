@@ -2,7 +2,7 @@
 
 `evals/tasks.yaml` (sha256 230e2860eddc). Each task's reference answer, built with the real tools, must be graded correct; each corrupted answer must fail with the expected category. Regenerate with `.venv/Scripts/python scripts/run_eval.py --self-test`.
 
-257/257 cases as expected (standard: 156, free-form: 62, ambiguous: 39).
+262/262 cases as expected (standard: 156, free-form: 62, ambiguous: 44).
 
 | task | type | variant | expected | got | ok |
 |---|---|---|---|---|---|
@@ -229,6 +229,7 @@
 | amb-grover8-p-code | ambiguous | runtime in ms | unit/format | unit/format | yes |
 | amb-grover8-p-code | ambiguous | wrong size | wrong circuit | wrong circuit | yes |
 | amb-grover8-p-code | ambiguous | alternative assumption | correct | correct | yes |
+| amb-grover8-p-code | ambiguous | values stated, no 'assumed' | correct | correct | yes |
 | amb-grover8-p-code | ambiguous | assumption unstated | wrong assumptions | wrong assumptions | yes |
 | amb-grover8-p-code | ambiguous | assumption misstated | wrong assumptions | wrong assumptions | yes |
 | amb-qft-n | ambiguous | reference | correct | correct | yes |
@@ -237,6 +238,7 @@
 | amb-qft-n | ambiguous | wrong p | wrong assumptions | wrong assumptions | yes |
 | amb-qft-n | ambiguous | wrong code | wrong assumptions | wrong assumptions | yes |
 | amb-qft-n | ambiguous | alternative assumption | correct | correct | yes |
+| amb-qft-n | ambiguous | values stated, no 'assumed' | correct | correct | yes |
 | amb-qft-n | ambiguous | assumption unstated | wrong assumptions | wrong assumptions | yes |
 | amb-qft-n | ambiguous | assumption misstated | wrong assumptions | wrong assumptions | yes |
 | amb-adder4-code | ambiguous | reference | correct | correct | yes |
@@ -245,6 +247,7 @@
 | amb-adder4-code | ambiguous | wrong size | wrong circuit | wrong circuit | yes |
 | amb-adder4-code | ambiguous | wrong p | wrong assumptions | wrong assumptions | yes |
 | amb-adder4-code | ambiguous | alternative assumption | correct | correct | yes |
+| amb-adder4-code | ambiguous | values stated, no 'assumed' | correct | correct | yes |
 | amb-adder4-code | ambiguous | assumption unstated | wrong assumptions | wrong assumptions | yes |
 | amb-adder4-code | ambiguous | assumption misstated | wrong assumptions | wrong assumptions | yes |
 | amb-tfim8-p | ambiguous | reference | correct | correct | yes |
@@ -253,6 +256,7 @@
 | amb-tfim8-p | ambiguous | wrong size | wrong circuit | wrong circuit | yes |
 | amb-tfim8-p | ambiguous | wrong code | wrong assumptions | wrong assumptions | yes |
 | amb-tfim8-p | ambiguous | alternative assumption | correct | correct | yes |
+| amb-tfim8-p | ambiguous | values stated, no 'assumed' | correct | correct | yes |
 | amb-tfim8-p | ambiguous | assumption unstated | wrong assumptions | wrong assumptions | yes |
 | amb-tfim8-p | ambiguous | assumption misstated | wrong assumptions | wrong assumptions | yes |
 | amb-qpe-n-p | ambiguous | reference | correct | correct | yes |
@@ -261,5 +265,6 @@
 | amb-qpe-n-p | ambiguous | runtime in ms | unit/format | unit/format | yes |
 | amb-qpe-n-p | ambiguous | wrong code | wrong assumptions | wrong assumptions | yes |
 | amb-qpe-n-p | ambiguous | alternative assumption | correct | correct | yes |
+| amb-qpe-n-p | ambiguous | values stated, no 'assumed' | correct | correct | yes |
 | amb-qpe-n-p | ambiguous | assumption unstated | wrong assumptions | wrong assumptions | yes |
 | amb-qpe-n-p | ambiguous | assumption misstated | wrong assumptions | wrong assumptions | yes |
