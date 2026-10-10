@@ -4,12 +4,20 @@
   "results/eval/anthropic_claude-sonnet-5/2026-10-09/runs-v2.jsonl": "40514585060f4af2c67dd79c65b545343b97e5f2e4dbdb11c733bc5b5dea0934"
  },
  "git": {
-  "commit": "e69922563b41142ee1cf83b97da9dbfc9b849327",
-  "dirty": false
+  "commit": "72140cd4b689c0d9ab2d54317f4adfc14d26f713",
+  "dirty": true
  },
  "config": {
   "primary": "results/eval/google_gemini-2.5-flash/2026-10-09/runs-v2.jsonl",
   "strong": "results/eval/anthropic_claude-sonnet-5/2026-10-09/runs-v2.jsonl",
-  "results_dir": "results/phase3/routing"
+  "results_dir": "results/phase3/routing",
+  "held_out": {
+   "design_passes": [
+    0,
+    1
+   ],
+   "test_pass": 2,
+   "max_gap_points": 5
+  }
  }
 }
