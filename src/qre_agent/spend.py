@@ -78,8 +78,9 @@ def spent(records, phase):
 
 
 class Guard:
-    def __init__(self, phase=None, budgets_path=BUDGETS_PATH, log_path=LOG_PATH):
-        """`phase` defaults to the QRE_PHASE environment variable."""
+    def __init__(self, phase=None, budgets_path=BUDGETS_PATH, log_path=LOG_PATH, run_cap=None):
+        """`phase` defaults to the QRE_PHASE environment variable. `run_cap` lowers the phase's cap
+        for this process, e.g. in CI, where the log starts empty on every run."""
         budgets = yaml.safe_load(Path(budgets_path).read_text(encoding="utf-8"))
         self.phase = phase or os.environ.get("QRE_PHASE")
         if self.phase not in budgets["caps"]:
@@ -87,6 +88,8 @@ class Guard:
                 f"unknown phase {self.phase!r}, expected one of {list(budgets['caps'])}"
             )
         self.cap = budgets["caps"][self.phase]
+        if run_cap is not None:
+            self.cap = min(self.cap, run_cap)
         self.prices = budgets["prices"]
         self.log_path = Path(log_path)
 

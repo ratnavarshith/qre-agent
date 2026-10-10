@@ -214,3 +214,19 @@ def test_worst_case_prices_the_whole_prompt_as_a_cache_write(tmp_path):
     assert prompt * 1.25 / 1e6 + 100 * 2 / 1e6 > 0.00035 > prompt * 1.0 / 1e6 + 100 * 2 / 1e6
     with pytest.raises(BudgetError):
         guard.complete(FakeClient(), "m", messages, 100)
+
+
+def test_run_cap_lowers_the_phase_cap_and_never_raises_it(tmp_path):
+    budgets = tmp_path / "budgets.yaml"
+    budgets.write_text(yaml.safe_dump({"caps": {"ci": 3}, "prices": PRICES}))
+    log = tmp_path / "spend.jsonl"
+    assert Guard("ci", budgets, log).cap == 3
+    assert Guard("ci", budgets, log, run_cap=0.2).cap == 0.2
+    assert Guard("ci", budgets, log, run_cap=10).cap == 3  # a run cap is never above the phase cap
+
+    capped = Guard("ci", budgets, log, run_cap=0.002)
+    client = FakeClient()
+    capped.complete(client, "cheap", [], 500)  # worst case $0.001
+    with pytest.raises(BudgetError, match=r"of the \$0.002 cap"):
+        capped.complete(client, "cheap", [], 1500)  # worst case $0.003 > the cap, far under $3
+    assert len(client.calls) == 1
