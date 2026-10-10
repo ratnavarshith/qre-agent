@@ -1,0 +1,64 @@
+{
+ "model": "google/gemini-2.5-flash",
+ "date": "2026-10-10 13:31:36 -0500",
+ "config": {
+  "model": "google/gemini-2.5-flash",
+  "strong_model": "anthropic/claude-sonnet-5",
+  "routing": "f",
+  "phase": "phase3",
+  "tasks": "evals/tasks.yaml",
+  "runs": 1,
+  "seed": 0,
+  "max_steps": 12,
+  "max_tokens": 4096,
+  "max_rpm": 15,
+  "strong_cache": true,
+  "results_dir": "results/phase3/routed",
+  "expected_cost_per_run": 0.0232,
+  "prediction": {
+   "correct": [
+    0.925,
+    0.9417,
+    0.975
+   ],
+   "cost": [
+    0.0221,
+    0.0232,
+    0.025
+   ],
+   "escalated": [
+    0.25,
+    0.2667,
+    0.275
+   ]
+  },
+  "stop": {
+   "cost_factor": 2.0,
+   "api_error_rate": 0.1,
+   "min_runs": 10
+  }
+ },
+ "tasks": "evals/tasks.yaml",
+ "tasks_sha256": "230e2860eddc0814fe96aa5acfb0d373d62f6bdec54391201dd8fa98a384d952",
+ "versions": {
+  "qdk": "1.32.3",
+  "qiskit": "2.5.2",
+  "bicycle_compiler": "0.2.1",
+  "bicycle_compiler_commit": "bed7e8aba4cc0fb86311b7fa6dad6217c0fce7cb",
+  "rsgridsynth": "0.2.2",
+  "cargo_lock_sha256": "605a42f1b3414fe57ef0b3620b8bef1553480759228a94bd69f7799bb53e0101"
+ },
+ "measurement_tables": {
+  "gross": "b11d3d1ac0aa19067b6db52bd7ce75d980976c2dc910a49cc543bf4bbc193fed",
+  "two-gross": "2f1c57ace3e989c9e6a85e958262971c87c96eff638138e18c6b37919d9ee248"
+ },
+ "hardware": {
+  "platform": "Windows-10-10.0.26200-SP0",
+  "processor": "Intel64 Family 6 Model 191 Stepping 2, GenuineIntel",
+  "python": "3.11.9"
+ },
+ "git": {
+  "commit": "7623f6a91a42b0863d459a62e1298facdf5e56ce",
+  "dirty": false
+ }
+}

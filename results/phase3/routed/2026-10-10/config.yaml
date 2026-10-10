@@ -1,0 +1,33 @@
+# Phase 3 live check of cost routing, policy f: all 40 tasks, one pass, each starting on
+# gemini-2.5-flash. A task restarts from scratch on claude-sonnet-5 when Gemini's first tool call
+# is build_circuit, or its final answer fails verify (after its one retry), runs out of steps or
+# errors. Estimates go through the on-disk cache. Copied next to the results in
+# results/phase3/routed/<date>/.
+#   .venv/Scripts/python scripts/run_eval.py evals/phase3-routed.yaml --estimate   # cost, no API calls
+#   .venv/Scripts/python scripts/run_eval.py evals/phase3-routed.yaml
+model: google/gemini-2.5-flash  # the primary
+strong_model: anthropic/claude-sonnet-5
+routing: f  # none | f
+phase: phase3
+tasks: evals/tasks.yaml
+runs: 1
+seed: 0  # sent to OpenRouter; providers may ignore it
+max_steps: 12  # per leg
+max_tokens: 4096  # per LLM call
+# Sonnet's rate limit (20 requests a minute per Anthropic model on a new account; paced at 15, as
+# in the four-model eval) and prompt cache; Gemini is neither paced nor cached explicitly.
+max_rpm: 15
+strong_cache: true
+results_dir: results/phase3/routed
+# What the simulation predicted for policy f (results/phase3/routing/summary.md): [min, mean, max]
+# over its three passes, graded v2, our prices, with Gemini's api error as a failure.
+expected_cost_per_run: 0.0232
+prediction:
+  correct: [0.925, 0.9417, 0.975]
+  cost: [0.0221, 0.0232, 0.025]
+  escalated: [0.25, 0.2667, 0.275]
+# Stop and ask when the cost passes cost_factor x the expected cost of the whole run, or when
+# more than api_error_rate of the runs are api errors (judged once min_runs runs are done).
+stop: {cost_factor: 2.0, api_error_rate: 0.1, min_runs: 10}
+
+# run at git commit 7623f6a91a42b0863d459a62e1298facdf5e56ce, dirty: False
