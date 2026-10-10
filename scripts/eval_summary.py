@@ -111,7 +111,8 @@ def main():
             "stored run from its trace with no LLM calls. The headline uses v2; v1 is shown next "
             "to it. Separately, 27 runs hit a harness bug (non-ASCII code crashed `build_circuit`) "
             "and were rerun after the fix; both graders see the rerun, and the runs before the fix "
-            "are compared under *Non-ASCII bug: the 27 rerun runs*."
+            "are compared under *Non-ASCII bug: the 27 rerun runs*. So the v1 column is grader v1 on "
+            "the runs after those reruns, not the numbers first reported before them."
         ),
         "",
         "## Headline (grader v2)",
