@@ -68,12 +68,14 @@ def refusal(error):
     return f"{what}: {error}"
 
 
-def run_routed(task, primary, strong, guard, run_id, make_toolbox, max_steps, max_tokens, runs_dir):
+def run_routed(task, primary, strong, guard, run_id, make_toolbox, max_steps, max_tokens, runs_dir,
+               **run_kwargs):  # fmt: skip
     """`primary` and `strong` are (client, model). The primary runs as `run_id`, the strong model
     as `<run_id>-escalated`; `make_toolbox()` gives each leg a fresh session. A budget refusal,
-    or a key out of credit or with its in-flight budget full, ends the task on the leg that hit it, with no escalation."""
+    or a key out of credit or with its in-flight budget full, ends the task on the leg that hit
+    it, with no escalation. `run_kwargs` (e.g. `guardrail`) go to `agent.run` on both legs."""
     (p_client, p_model), (s_client, s_model) = primary, strong
-    kw = {"max_steps": max_steps, "max_tokens": max_tokens}
+    kw = {"max_steps": max_steps, "max_tokens": max_tokens} | run_kwargs
     p_toolbox = make_toolbox()
     p_run, p_error = _leg(task, p_client, guard, p_model, run_id, p_toolbox, runs_dir, True,
                           {"policy": "f", "role": "primary"}, **kw)  # fmt: skip

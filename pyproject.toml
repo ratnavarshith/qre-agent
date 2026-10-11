@@ -10,6 +10,7 @@ dependencies = ["qdk[qiskit,qre]", "pyyaml", "python-dotenv", "opentelemetry-sdk
 
 [project.optional-dependencies]
 dev = ["matplotlib", "pytest", "ruff"]
+demo = ["fastapi", "uvicorn"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
