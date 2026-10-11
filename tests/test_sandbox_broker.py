@@ -427,7 +427,7 @@ def test_a_broker_reply_over_the_limit_is_refused_by_size_before_decoding():
         """The broker's end sends a reply of `size` bytes from a thread: a socket pair's buffer is
         smaller than the reply, so sending first would block."""
         a, b = socket.socketpair()
-        data = sandbox_broker.base64.b64encode(b" " * size).decode()
+        data = sandbox_broker.base64.b64encode(b"\0" * size).decode()
         threading.Thread(target=send, args=(b, {"ok": True, "qpy": data}), daemon=True).start()
         with a:
             return exchange(a, "x", 5)
