@@ -38,7 +38,7 @@ After it started (`{"event": "error", ...}`): `timeout` (240 s), `busy` (no plac
 
 ## The sandbox
 
-`build_circuit`'s code runs behind the sandbox broker, as a separate user, when `QRE_SANDBOX_SOCKET` is set. The server logs how it runs at startup, and with `QRE_SANDBOX_REQUIRED=1` it refuses to start without the broker (see docs/agent-design.md, Sandbox). The container sets both.
+`build_circuit`'s code runs behind the sandbox broker, as a separate user, when `QRE_SANDBOX_SOCKET` is set. The server logs how it runs at startup, and with `QRE_SANDBOX_REQUIRED=1` it refuses to start without the broker (see docs/agent-design.md, Sandbox). The container sets both (docs/demo-image.md).
 
 ## Limits
 
