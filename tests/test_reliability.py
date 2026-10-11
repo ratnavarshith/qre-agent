@@ -36,6 +36,10 @@ class FakeGuard:
         return self.ok or reply("done")
 
 
+KEY_LIMIT = b'{"error":{"code":402,"metadata":{"limit_source":"openrouter_key_limit"}}}'
+CREDITS = b'{"error":{"code":403,"metadata":{"limit_source":"openrouter_credits"}}}'
+
+
 def err(kind, retry_after=None):
     return ProviderError(kind, kind, retry_after=retry_after)
 
@@ -186,6 +190,11 @@ def test_openrouter_errors_are_classified(monkeypatch):
          "rate_limit", 5.0),
         (urllib.error.HTTPError("u", 502, "", {}, io.BytesIO(b"bad gateway")), "server", None),
         (urllib.error.HTTPError("u", 400, "", {}, io.BytesIO(b"bad")), "client", None),
+        (urllib.error.HTTPError("u", 402, "", {}, io.BytesIO(KEY_LIMIT)), "out_of_credit", None),
+        (urllib.error.HTTPError("u", 403, "", {}, io.BytesIO(CREDITS)), "out_of_credit", None),
+        # a 402 that names no limit source is the in-flight budget, transient: not out of credit
+        (urllib.error.HTTPError("u", 402, "", {}, io.BytesIO(b"pay")), "client", None),
+        (urllib.error.HTTPError("u", 403, "", {}, io.BytesIO(b"flagged")), "client", None),
         (TimeoutError("read timed out"), "timeout", None),
         (urllib.error.URLError(TimeoutError()), "timeout", None),
         (urllib.error.URLError("no route"), "connection", None),
@@ -210,6 +219,17 @@ def test_openrouter_missing_usage_and_error_bodies_are_retryable():
     with pytest.raises(ProviderError) as raised:
         parse({"error": {"code": 429, "message": "rate limited"}})
     assert raised.value.kind == "rate_limit"
+    with pytest.raises(ProviderError) as raised:
+        parse({"error": {"code": 402, "metadata": {"limit_source": "openrouter_key_limit"}}})
+    assert raised.value.kind == "out_of_credit" and not raised.value.retryable
+
+
+def test_out_of_credit_is_not_retried_and_does_not_fall_back():
+    primary, fallback = FakeGuard(err("out_of_credit")), FakeGuard()
+    with pytest.raises(ProviderError) as raised:
+        Reliable(primary, (fallback, None, "fake2"), sleep=Sleeps()).complete(None, "fake", [], 1)
+    assert raised.value.kind == "out_of_credit" and primary.calls == ["fake"]
+    assert fallback.calls == []
 
 
 REQUEST = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")

@@ -22,7 +22,8 @@ RETRYABLE = ("timeout", "rate_limit", "server", "missing_usage", "malformed_json
 class ProviderError(RuntimeError):
     """A failed LLM call. `kind` is timeout, rate_limit (429), server (5xx), missing_usage,
     malformed_json (a tool call whose arguments aren't JSON) or connection (unreachable, reset, a
-    reply cut off), which reliability.Reliable retries, or client (other 4xx), which it doesn't.
+    reply cut off), which reliability.Reliable retries, or client (other 4xx) and out_of_credit (the
+    key's limit or the account's credits are used up), which it doesn't.
     `retry_after` is the provider's Retry-After in seconds, if it sent one."""
 
     def __init__(self, kind, message, status=None, retry_after=None):
@@ -34,12 +35,30 @@ class ProviderError(RuntimeError):
         return self.kind in RETRYABLE
 
 
-def status_kind(status):
+# `limit_source`s of a 402 or 403 that mean the key or account is out of credit; a 402 without
+# one is the in-flight budget, which is transient.
+CREDIT_SOURCES = ("openrouter_key_limit", "openrouter_credits")
+
+
+def status_kind(status, error=None):
+    """`error` is the reply's `error` object, which tells a spent key from other 402s and 403s."""
+    source = (error.get("metadata") or {}).get("limit_source") if isinstance(error, dict) else None
+    if status in (402, 403) and source in CREDIT_SOURCES:
+        return "out_of_credit"
     if status == 429:
         return "rate_limit"
     if status == 408:
         return "timeout"
     return "server" if status >= 500 else "client"
+
+
+def error_object(body):
+    """The `error` object of an error reply's JSON body, or None."""
+    try:
+        error = json.loads(body).get("error")
+    except (ValueError, AttributeError):
+        return None
+    return error if isinstance(error, dict) else None
 
 
 def retry_after(value, now=None):
@@ -115,9 +134,10 @@ class OpenRouter:
             with urllib.request.urlopen(request, timeout=self.timeout) as r:
                 return parse(json.load(r))
         except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")
             raise ProviderError(
-                status_kind(e.code),
-                f"OpenRouter HTTP {e.code}: {e.read().decode(errors='replace')}",
+                status_kind(e.code, error_object(body)),
+                f"OpenRouter HTTP {e.code}: {body}",
                 e.code,
                 retry_after(e.headers.get("Retry-After")),
             ) from None
@@ -183,7 +203,7 @@ def parse(data):
     """Normalize a chat completion: input_tokens counts all prompt tokens, cached included."""
     if error := data.get("error"):
         code = error.get("code") if isinstance(error, dict) else None
-        kind = status_kind(code) if isinstance(code, int) else "server"
+        kind = status_kind(code, error) if isinstance(code, int) else "server"
         raise ProviderError(kind, f"OpenRouter error: {error}", code)
     if not data.get("usage"):  # nothing to bill it by; may still have been billed
         raise ProviderError("missing_usage", "OpenRouter reply has no usage")

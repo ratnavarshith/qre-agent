@@ -52,16 +52,21 @@ def reason(result, error):
     return None if result.verification["passed"] else "verify_failed"
 
 
+def exhausted(error):
+    """A budget refusal, or a key that OpenRouter says is out of credit: both end the task."""
+    return isinstance(error, BudgetError) or getattr(error, "kind", None) == "out_of_credit"
+
+
 def run_routed(task, primary, strong, guard, run_id, make_toolbox, max_steps, max_tokens, runs_dir):
     """`primary` and `strong` are (client, model). The primary runs as `run_id`, the strong model
-    as `<run_id>-escalated`; `make_toolbox()` gives each leg a fresh session. A budget refusal
-    ends the task on the leg that was refused, with no escalation."""
+    as `<run_id>-escalated`; `make_toolbox()` gives each leg a fresh session. A budget refusal,
+    or a key out of credit, ends the task on the leg that hit it, with no escalation."""
     (p_client, p_model), (s_client, s_model) = primary, strong
     kw = {"max_steps": max_steps, "max_tokens": max_tokens}
     p_toolbox = make_toolbox()
     p_run, p_error = _leg(task, p_client, guard, p_model, run_id, p_toolbox, runs_dir, True,
                           {"policy": "f", "role": "primary"}, **kw)  # fmt: skip
-    why = None if isinstance(p_error, BudgetError) else reason(p_run, p_error)
+    why = None if exhausted(p_error) else reason(p_run, p_error)
     routing = {
         "policy": "f",
         "primary_model": p_model,
@@ -95,7 +100,9 @@ def run_routed(task, primary, strong, guard, run_id, make_toolbox, max_steps, ma
                          steps=answer.steps + p_run.steps)  # fmt: skip
     with answer.trace_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps({"type": "routing", "time": time.time(), **routing}) + "\n")
-    refused = str(error) if isinstance(error, BudgetError) else None
+    refused = None
+    if exhausted(error):
+        refused = str(error) if isinstance(error, BudgetError) else f"budget exhausted: {error}"
     return Routed(answer, toolbox, routing, refused)
 
 

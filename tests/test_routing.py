@@ -1,4 +1,6 @@
+import io
 import json
+import urllib.error
 
 import pytest
 import yaml
@@ -8,9 +10,10 @@ from qre_agent import bicycle, surface
 from qre_agent import cache as estimate_cache
 from qre_agent.agent import SWITCHED
 from qre_agent.cache import EstimateCache
+from qre_agent.llm import OpenRouter, ProviderError
 from qre_agent.routing import run_routed
 from qre_agent.spend import Guard
-from qre_agent.tools import Toolbox
+from qre_agent.tools import SCHEMAS, Toolbox
 
 CALL_PRIMARY = 840 / 1e6
 CALL_STRONG = 8400 / 1e6  # the strong model's prices are 10x
@@ -156,6 +159,47 @@ def test_a_budget_refusal_ends_the_task_without_escalating(tmp_path):
         Guard("dev", budgets, tmp_path / "spend.jsonl"), tmp_path, FakeClient(reply("x")), strong
     )
     assert "worst case" in r.refused and not r.routing["escalated"] and strong.sent == []
+
+
+def out_of_credit(monkeypatch):
+    """An OpenRouter client whose key is out of credit: HTTP 402 with the key limit's source."""
+    body = json.dumps({"error": {"code": 402, "message": "Key limit exceeded",
+                                 "metadata": {"limit_source": "openrouter_key_limit"}}})  # fmt: skip
+
+    def urlopen(request, timeout):
+        raise urllib.error.HTTPError("u", 402, "", {}, io.BytesIO(body.encode()))
+
+    monkeypatch.setattr("qre_agent.spend.load_keys", lambda: None)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-" + "0" * 64)
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    return OpenRouter(SCHEMAS)
+
+
+def test_a_key_out_of_credit_on_the_primary_ends_the_task_without_escalating(
+    guard, tmp_path, monkeypatch
+):
+    strong = FakeClient(*BENCH, reply(ANSWER))
+    r = route(guard, tmp_path, out_of_credit(monkeypatch), strong)
+    assert not r.routing["escalated"] and strong.sent == []
+    assert "budget exhausted" in r.refused and "openrouter_key_limit" in r.refused
+
+
+def test_a_key_out_of_credit_on_the_strong_model_is_refused_too(guard, tmp_path, monkeypatch):
+    class Down:
+        def complete(self, model, messages, max_tokens):
+            raise RuntimeError("provider down")
+
+    r = route(guard, tmp_path, Down(), out_of_credit(monkeypatch))
+    assert r.routing["escalated"] and "budget exhausted" in r.refused
+
+
+def test_a_provider_error_of_another_kind_still_escalates(guard, tmp_path):
+    class Down:
+        def complete(self, model, messages, max_tokens):
+            raise ProviderError("client", "bad request", 400)
+
+    r = route(guard, tmp_path, Down(), FakeClient(*BENCH, reply(ANSWER)))
+    assert r.routing["escalated"] and r.routing["reason"] == "primary_error" and r.refused is None
 
 
 @pytest.fixture
