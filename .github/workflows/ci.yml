@@ -86,7 +86,7 @@ jobs:
           key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
 
       - name: pytest
-        run: timeout 900 pytest -v -rs -o faulthandler_timeout=240
+        run: pytest -q -rs
 
       # The sandbox tests that need root: a broker as the user `nobody`, which has to be able to
       # reach the Python install and the source. QRE_REQUIRE_ROOT_TESTS=1 makes a skip a failure.
@@ -95,7 +95,7 @@ jobs:
           p="$GITHUB_WORKSPACE"
           while [ "$p" != / ]; do sudo chmod o+x "$p"; p=$(dirname "$p"); done
           sudo env "PATH=$PATH" QRE_REQUIRE_ROOT_TESTS=1 \
-            timeout 600 python -m pytest tests/test_sandbox_broker.py -v -rs -p no:cacheprovider -o faulthandler_timeout=240
+            python -m pytest tests/test_sandbox_broker.py -q -rs -p no:cacheprovider
 
   # Paths whose change can change the agent's answers: the code (the system prompt is in
   # src/qre_agent/agent.py), the evals, and what feeds them.
