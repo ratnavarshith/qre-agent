@@ -224,7 +224,7 @@ def test_a_real_broker_builds_circuits_and_survives_a_memory_bomb(broker):
     assert run_circuit_code(BUILD).num_qubits == 2
     with pytest.raises(SandboxError, match="MemoryError"):
         run_circuit_code("import numpy as np\nx = np.ones(200_000_000)\n" + BUILD)
-    with pytest.raises(SandboxError, match="timed out after 3 s"):
+    with pytest.raises(SandboxError, match=r"timed out after 3(.0)? s"):
         run_circuit_code("while True:\n    pass\n", timeout=3)
     assert run_circuit_code(BUILD).num_qubits == 2
     assert oct(os.stat(os.environ[SOCKET_ENV]).st_mode & 0o777) == "0o666"

@@ -95,7 +95,7 @@ jobs:
           p="$GITHUB_WORKSPACE"
           while [ "$p" != / ]; do sudo chmod o+x "$p"; p=$(dirname "$p"); done
           sudo env "PATH=$PATH" QRE_REQUIRE_ROOT_TESTS=1 \
-            python -m pytest tests/test_sandbox_broker.py -q -rs -p no:cacheprovider
+            timeout 600 python -m pytest tests/test_sandbox_broker.py -v -rs -p no:cacheprovider -o faulthandler_timeout=240
 
   # Paths whose change can change the agent's answers: the code (the system prompt is in
   # src/qre_agent/agent.py), the evals, and what feeds them.
