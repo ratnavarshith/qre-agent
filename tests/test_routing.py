@@ -161,13 +161,19 @@ def test_a_budget_refusal_ends_the_task_without_escalating(tmp_path):
     assert "worst case" in r.refused and not r.routing["escalated"] and strong.sent == []
 
 
-def out_of_credit(monkeypatch):
-    """An OpenRouter client whose key is out of credit: HTTP 402 with the key limit's source."""
-    body = json.dumps({"error": {"code": 402, "message": "Key limit exceeded",
-                                 "metadata": {"limit_source": "openrouter_key_limit"}}})  # fmt: skip
+KEY_LIMIT = {"limit_source": "openrouter_key_limit"}
+IN_FLIGHT = {"limit_source": "openrouter_in_flight_budget"}
+
+
+def http_402(monkeypatch, metadata=None):
+    """An OpenRouter client whose every call gets HTTP 402 (with `metadata`, if any)."""
+    error = {"code": 402, "message": "Key limit exceeded"} | (
+        {"metadata": metadata} if metadata else {}
+    )
+    body = json.dumps({"error": error}).encode()
 
     def urlopen(request, timeout):
-        raise urllib.error.HTTPError("u", 402, "", {}, io.BytesIO(body.encode()))
+        raise urllib.error.HTTPError("u", 402, "", {"Retry-After": "60"}, io.BytesIO(body))
 
     monkeypatch.setattr("qre_agent.spend.load_keys", lambda: None)
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-" + "0" * 64)
@@ -175,13 +181,23 @@ def out_of_credit(monkeypatch):
     return OpenRouter(SCHEMAS)
 
 
+@pytest.mark.parametrize("metadata", [KEY_LIMIT, None], ids=["key_limit", "no_limit_source"])
 def test_a_key_out_of_credit_on_the_primary_ends_the_task_without_escalating(
+    guard, tmp_path, monkeypatch, metadata
+):
+    strong = FakeClient(*BENCH, reply(ANSWER))
+    r = route(guard, tmp_path, http_402(monkeypatch, metadata), strong)
+    assert not r.routing["escalated"] and strong.sent == []
+    assert "budget exhausted" in r.refused and "HTTP 402" in r.refused
+
+
+def test_an_in_flight_budget_402_on_the_primary_does_not_escalate_either(
     guard, tmp_path, monkeypatch
 ):
     strong = FakeClient(*BENCH, reply(ANSWER))
-    r = route(guard, tmp_path, out_of_credit(monkeypatch), strong)
+    r = route(guard, tmp_path, http_402(monkeypatch, IN_FLIGHT), strong)
     assert not r.routing["escalated"] and strong.sent == []
-    assert "budget exhausted" in r.refused and "openrouter_key_limit" in r.refused
+    assert "in-flight budget full" in r.refused
 
 
 def test_a_key_out_of_credit_on_the_strong_model_is_refused_too(guard, tmp_path, monkeypatch):
@@ -189,7 +205,7 @@ def test_a_key_out_of_credit_on_the_strong_model_is_refused_too(guard, tmp_path,
         def complete(self, model, messages, max_tokens):
             raise RuntimeError("provider down")
 
-    r = route(guard, tmp_path, Down(), out_of_credit(monkeypatch))
+    r = route(guard, tmp_path, Down(), http_402(monkeypatch, KEY_LIMIT))
     assert r.routing["escalated"] and "budget exhausted" in r.refused
 
 

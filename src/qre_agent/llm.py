@@ -16,13 +16,17 @@ from .spend import Reply, api_key
 URL = "https://openrouter.ai/api/v1/chat/completions"
 TIMEOUT_S = 180
 CACHE_CONTROL = {"type": "ephemeral"}
-RETRYABLE = ("timeout", "rate_limit", "server", "missing_usage", "malformed_json", "connection")
+RETRYABLE = (
+    "timeout", "rate_limit", "server", "missing_usage", "malformed_json", "connection",
+    "in_flight_budget",
+)  # fmt: skip
 
 
 class ProviderError(RuntimeError):
     """A failed LLM call. `kind` is timeout, rate_limit (429), server (5xx), missing_usage,
     malformed_json (a tool call whose arguments aren't JSON) or connection (unreachable, reset, a
-    reply cut off), which reliability.Reliable retries, or client (other 4xx) and out_of_credit (the
+    reply cut off) or in_flight_budget (a 402 with a Retry-After: the key's concurrent spend is at
+    its limit), which reliability.Reliable retries, or client (other 4xx) and out_of_credit (the
     key's limit or the account's credits are used up), which it doesn't.
     `retry_after` is the provider's Retry-After in seconds, if it sent one."""
 
@@ -35,15 +39,22 @@ class ProviderError(RuntimeError):
         return self.kind in RETRYABLE
 
 
-# `limit_source`s of a 402 or 403 that mean the key or account is out of credit; a 402 without
-# one is the in-flight budget, which is transient.
-CREDIT_SOURCES = ("openrouter_key_limit", "openrouter_credits")
+# `limit_source`s of a 403 that mean a budget is used up (docs: openrouter.ai/docs/api-reference/errors
+# and /limits). Any 402 means the same, except one with the in-flight source, which is transient.
+CREDIT_SOURCES = (
+    "openrouter_key_limit", "openrouter_credits", "openrouter_guardrail_budget",
+    "openrouter_workspace_budget",
+)  # fmt: skip
+IN_FLIGHT_SOURCE = "openrouter_in_flight_budget"
 
 
 def status_kind(status, error=None):
-    """`error` is the reply's `error` object, which tells a spent key from other 402s and 403s."""
+    """`error` is the reply's `error` object, whose `limit_source` tells the kinds of 402 and 403
+    apart."""
     source = (error.get("metadata") or {}).get("limit_source") if isinstance(error, dict) else None
-    if status in (402, 403) and source in CREDIT_SOURCES:
+    if status == 402:
+        return "in_flight_budget" if source == IN_FLIGHT_SOURCE else "out_of_credit"
+    if status == 403 and source in CREDIT_SOURCES:
         return "out_of_credit"
     if status == 429:
         return "rate_limit"

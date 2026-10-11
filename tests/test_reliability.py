@@ -37,6 +37,7 @@ class FakeGuard:
 
 
 KEY_LIMIT = b'{"error":{"code":402,"metadata":{"limit_source":"openrouter_key_limit"}}}'
+IN_FLIGHT = b'{"error":{"code":402,"metadata":{"limit_source":"openrouter_in_flight_budget"}}}'
 CREDITS = b'{"error":{"code":403,"metadata":{"limit_source":"openrouter_credits"}}}'
 
 
@@ -192,8 +193,10 @@ def test_openrouter_errors_are_classified(monkeypatch):
         (urllib.error.HTTPError("u", 400, "", {}, io.BytesIO(b"bad")), "client", None),
         (urllib.error.HTTPError("u", 402, "", {}, io.BytesIO(KEY_LIMIT)), "out_of_credit", None),
         (urllib.error.HTTPError("u", 403, "", {}, io.BytesIO(CREDITS)), "out_of_credit", None),
-        # a 402 that names no limit source is the in-flight budget, transient: not out of credit
-        (urllib.error.HTTPError("u", 402, "", {}, io.BytesIO(b"pay")), "client", None),
+        # a 402 that names no limit source is out of credit too: stopping is safer than retrying
+        (urllib.error.HTTPError("u", 402, "", {}, io.BytesIO(b"pay")), "out_of_credit", None),
+        (urllib.error.HTTPError("u", 402, "", {"Retry-After": "7"}, io.BytesIO(IN_FLIGHT)),
+         "in_flight_budget", 7.0),
         (urllib.error.HTTPError("u", 403, "", {}, io.BytesIO(b"flagged")), "client", None),
         (TimeoutError("read timed out"), "timeout", None),
         (urllib.error.URLError(TimeoutError()), "timeout", None),
@@ -222,6 +225,17 @@ def test_openrouter_missing_usage_and_error_bodies_are_retryable():
     with pytest.raises(ProviderError) as raised:
         parse({"error": {"code": 402, "metadata": {"limit_source": "openrouter_key_limit"}}})
     assert raised.value.kind == "out_of_credit" and not raised.value.retryable
+    with pytest.raises(ProviderError) as raised:
+        parse({"error": {"code": 402, "metadata": {"limit_source": "openrouter_in_flight_budget"}}})
+    assert raised.value.kind == "in_flight_budget" and raised.value.retryable
+
+
+def test_an_in_flight_budget_402_is_retried_after_its_retry_after():
+    sleeps = Sleeps()
+    guard = FakeGuard(ProviderError("in_flight_budget", "full", 402, retry_after=45.0))
+    r = Reliable(guard, sleep=sleeps).complete(None, "fake", [], 1)
+    assert guard.calls == ["fake", "fake"] and r.retries == 1 and r.faults == ("in_flight_budget",)
+    assert sleeps == [45.0]
 
 
 def test_out_of_credit_is_not_retried_and_does_not_fall_back():

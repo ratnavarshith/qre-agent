@@ -52,15 +52,26 @@ def reason(result, error):
     return None if result.verification["passed"] else "verify_failed"
 
 
+STOPS = ("out_of_credit", "in_flight_budget")
+
+
 def exhausted(error):
-    """A budget refusal, or a key that OpenRouter says is out of credit: both end the task."""
-    return isinstance(error, BudgetError) or getattr(error, "kind", None) == "out_of_credit"
+    """A budget refusal, or OpenRouter saying the key is out of credit or its in-flight budget is
+    full (after the retries): all end the task, as the strong model would hit the same limit."""
+    return isinstance(error, BudgetError) or getattr(error, "kind", None) in STOPS
+
+
+def refusal(error):
+    if isinstance(error, BudgetError):
+        return str(error)
+    what = "budget exhausted" if error.kind == "out_of_credit" else "in-flight budget full"
+    return f"{what}: {error}"
 
 
 def run_routed(task, primary, strong, guard, run_id, make_toolbox, max_steps, max_tokens, runs_dir):
     """`primary` and `strong` are (client, model). The primary runs as `run_id`, the strong model
     as `<run_id>-escalated`; `make_toolbox()` gives each leg a fresh session. A budget refusal,
-    or a key out of credit, ends the task on the leg that hit it, with no escalation."""
+    or a key out of credit or with its in-flight budget full, ends the task on the leg that hit it, with no escalation."""
     (p_client, p_model), (s_client, s_model) = primary, strong
     kw = {"max_steps": max_steps, "max_tokens": max_tokens}
     p_toolbox = make_toolbox()
@@ -100,9 +111,7 @@ def run_routed(task, primary, strong, guard, run_id, make_toolbox, max_steps, ma
                          steps=answer.steps + p_run.steps)  # fmt: skip
     with answer.trace_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps({"type": "routing", "time": time.time(), **routing}) + "\n")
-    refused = None
-    if exhausted(error):
-        refused = str(error) if isinstance(error, BudgetError) else f"budget exhausted: {error}"
+    refused = refusal(error) if exhausted(error) else None
     return Routed(answer, toolbox, routing, refused)
 
 
