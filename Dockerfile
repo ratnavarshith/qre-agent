@@ -45,12 +45,12 @@ COPY --from=compiler /out/ /opt/bicycle/
 WORKDIR /cache
 # The search breaks cost ties in HashMap order, so every generated table differs a little (bicycle
 # timesteps by about 1%): the tables of this image are these, and their hashes are recorded.
-RUN set -eu; pids=""; \
+RUN set -eu; mkdir tables; pids=""; \
     for code in gross two-gross; do \
-      /opt/bicycle/target/release/bicycle_compiler "$code" generate "table_$code" & pids="$pids $!"; \
+      /opt/bicycle/target/release/bicycle_compiler "$code" generate "tables/table_$code" & pids="$pids $!"; \
     done; \
     for pid in $pids; do wait "$pid"; done; \
-    sha256sum table_* > tables.sha256; \
+    cd tables; sha256sum table_* > tables.sha256; \
     cat tables.sha256; ls -l
 
 
@@ -70,7 +70,7 @@ RUN useradd --system --uid 10001 --user-group --no-create-home --shell /usr/sbin
  && useradd --system --uid 10002 --user-group --no-create-home --shell /usr/sbin/nologin sandbox
 COPY --from=deps /opt/venv /opt/venv
 COPY --from=compiler /out/ /opt/bicycle/
-COPY --from=tables /cache/ /app/cache/
+COPY --from=tables /cache/tables/ /app/cache/
 WORKDIR /app
 # The code runs from /app/src, so the repository root is /app: assumptions/, budgets.yaml and
 # cache/ (the tables) sit where the code looks for them.

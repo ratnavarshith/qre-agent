@@ -96,7 +96,7 @@ jobs:
         run: |
           p="$GITHUB_WORKSPACE"
           while [ "$p" != / ]; do sudo chmod o+x "$p"; p=$(dirname "$p"); done
-          sudo env "PATH=$PATH" QRE_REQUIRE_ROOT_TESTS=1 \
+          sudo env "PATH=$PATH" QRE_REQUIRE_ROOT_TESTS=1 QDK_PYTHON_TELEMETRY=none \
             python -m pytest tests/test_sandbox_broker.py -q -rs -p no:cacheprovider
 
   # Paths whose change can change the agent's answers: the code (the system prompt is in
