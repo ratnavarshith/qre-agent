@@ -85,6 +85,29 @@ jobs:
             cache
           key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
 
+      - name: debug memory of the sandbox child (temporary)
+        run: |
+          cat > /tmp/vm.py <<'EOF'
+          import os, sys
+          def vm(tag):
+              d = dict(l.split(":", 1) for l in open("/proc/self/status") if l.startswith("Vm"))
+              print(tag, {k: d[k].strip() for k in ("VmPeak", "VmSize", "VmData", "VmRSS", "VmHWM")}, flush=True)
+          vm("start")
+          from qiskit import QuantumCircuit, qpy
+          vm("qiskit")
+          import numpy, math
+          import qiskit.circuit.library
+          vm("library")
+          import unicodedata
+          vm("unicodedata")
+          import numpy as np
+          x = np.ones(10_000_000)
+          vm("80MB array")
+          EOF
+          OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 RAYON_NUM_THREADS=1 python -I /tmp/vm.py
+          python -I /tmp/vm.py
+          ulimit -a | head -20
+
       - name: pytest
         run: timeout 900 pytest -v -rs -o faulthandler_timeout=240
 
