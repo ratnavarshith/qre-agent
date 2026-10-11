@@ -14,10 +14,14 @@ from qiskit import QuantumCircuit, qpy
 
 # Resource limits (Linux), for the process and what it can start. Based on the largest real
 # build_circuit calls in 449 past traces (33 qubits, 258 operations, 10 KB of code): 0.6 s of CPU
-# (nearly all of it importing qiskit), 66 MB resident (measured on Windows), a 12 KB QPY file. See docs/agent-design.md.
+# (nearly all of it importing qiskit), 66 MB resident (measured on Windows), a 12 KB QPY file. See
+# docs/agent-design.md.
 LIMITS = {
     "cpu_s": 10,  # CPU seconds (the wall-clock timeout is the caller's)
-    "memory_mb": 512,  # RLIMIT_DATA: heap and private writable mappings, not shared libraries
+    # RLIMIT_DATA, as this many MB more than the process maps now, after importing qiskit: that
+    # import alone maps 1.1 to 1.3 GB of private writable address space (96 MB of it resident), so
+    # an absolute limit would have to be set to the import, not to what a build needs.
+    "memory_mb": 512,
     "fsize_mb": 10,  # the largest file the process can write
 }
 # Also "nproc": RLIMIT_NPROC counts every process and thread of the *user*, so it only means
@@ -36,6 +40,16 @@ FILESYSTEM_EVENTS = {
 }  # fmt: skip
 
 
+def mapped_data():
+    """Bytes of private writable address space the process has mapped now (VmData), which is
+    what RLIMIT_DATA counts."""
+    with open("/proc/self/status", encoding="ascii") as f:
+        for line in f:
+            if line.startswith("VmData:"):
+                return int(line.split()[1]) * 1024
+    raise RuntimeError("no VmData in /proc/self/status")
+
+
 def apply_limits(limits):
     """Lowers the resource limits (soft and hard, so the code can't raise them again). A no-op
     off Linux. A limit above the current hard limit is left at that."""
@@ -46,7 +60,7 @@ def apply_limits(limits):
     mb = 2**20
     wanted = [
         ("RLIMIT_CPU", limits["cpu_s"], 2),  # SIGXCPU at the soft limit, SIGKILL 2 s later
-        ("RLIMIT_DATA", limits["memory_mb"] * mb, 0),
+        ("RLIMIT_DATA", mapped_data() + limits["memory_mb"] * mb, 0),
         ("RLIMIT_FSIZE", limits["fsize_mb"] * mb, 0),
         ("RLIMIT_CORE", 0, 0),
     ]
