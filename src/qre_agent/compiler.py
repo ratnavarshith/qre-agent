@@ -83,7 +83,12 @@ def gridsynth_t_counts(a, angles, accuracy):
 
 
 def _git(root, *args):
-    r = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=False)
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(root), *args], capture_output=True, text=True, check=False
+        )
+    except FileNotFoundError:  # no git (the Docker image): no commit from here
+        return None
     return r.stdout.strip() if r.returncode == 0 else None
 
 

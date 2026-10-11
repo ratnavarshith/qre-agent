@@ -64,7 +64,7 @@ try:
     run_circuit_code(head + fill + "circuit = QuantumCircuit(1)\\n")
     print('no error')
 except SandboxError as e:
-    print(str(e).strip().splitlines()[-1])
+    print(str(e).strip().splitlines()[-1] if str(e).strip() else 'empty error')
 print(run_circuit_code(head + "circuit = QuantumCircuit(2)\\n").num_qubits)  # and it still works
 """
 ESTIMATE = """
@@ -202,11 +202,12 @@ class Smoke:
     def test_volume(self):
         code, out, err = self.run_python(DISK_FULL)
         lines = out.splitlines()
+        # The write stops with "No space left on device"; the child usually can't even write its
+        # traceback to the full volume, so the error may be the broker's own message.
+        stopped = bool(lines) and ("No space left" in lines[0] or "may be full" in lines[0])
         self.check(
             "the size-limited volume stops a runaway write, and builds still work",
-            code == 0
-            and "No space left on device" in (lines[0] if lines else "")
-            and lines[-1:] == ["2"],
+            code == 0 and stopped and lines[-1:] == ["2"],
             (err or out)[-300:],
         )
 

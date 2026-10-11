@@ -70,7 +70,7 @@ LABEL org.opencontainers.image.title="qre-agent demo" \
       org.opencontainers.image.revision="${GIT_SHA}"
 # The server and the sandbox are different users, and neither is root. Their ids are fixed so a
 # mounted volume can be given to one of them.
-RUN useradd --system --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin app \
+RUN useradd --system --uid 10001 --user-group --create-home --home-dir /home/app --shell /usr/sbin/nologin app \
  && useradd --system --uid 10002 --user-group --no-create-home --shell /usr/sbin/nologin sandbox
 COPY --from=deps /opt/venv /opt/venv
 COPY --from=compiler /out/ /opt/bicycle/

@@ -183,7 +183,12 @@ def build_qpy(code, timeout=TIMEOUT_S, allowed=ALLOWED_IMPORTS, limits=None):
             shown = RUNNER_LIMITS | (limits or {})
             if why := killed_by(r.returncode, shown):
                 raise SandboxError(f"the code {why}")
-            raise SandboxError(err.read_bytes()[-2000:].decode("utf-8", errors="replace").strip())
+            text = err.read_bytes()[-2000:].decode("utf-8", errors="replace").strip()
+            raise SandboxError(
+                text
+                or f"the code exited with code {r.returncode} and no error output "
+                "(the temp directory may be full)"
+            )
         check_size(out.stat().st_size)
         return out.read_bytes()
 

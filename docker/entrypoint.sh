@@ -36,7 +36,7 @@ for _ in $(seq 1 150); do  # up to 15 s for the socket
 done
 [ -S "$SOCKET" ] || { echo "entrypoint: no sandbox socket at $SOCKET" >&2; kill "$broker"; exit 1; }
 
-"${as_app[@]}" python -m qre_agent.server &
+HOME=/home/app "${as_app[@]}" python -m qre_agent.server &
 server=$!
 
 trap 'kill -TERM "$server" "$broker" 2>/dev/null || true' TERM INT

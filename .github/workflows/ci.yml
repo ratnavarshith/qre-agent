@@ -269,7 +269,9 @@ jobs:
 
       - name: Smoke test (no network, dummy key)
         if: steps.changed.outputs.build == 'true'
-        run: python scripts/smoke_image.py qre-demo:ci --lock ci/bicycle-Cargo.lock | tee -a "$GITHUB_STEP_SUMMARY"
+        run: |
+          set -o pipefail
+          python scripts/smoke_image.py qre-demo:ci --lock ci/bicycle-Cargo.lock | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Build the test image
         if: steps.changed.outputs.build == 'true'

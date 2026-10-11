@@ -265,12 +265,18 @@ def sandbox_user():
     return entry
 
 
+def clean_env():
+    """What a process of another user gets: PATH, and where to find this package if it isn't installed."""
+    keep = ("PATH", "PYTHONPATH")
+    return {k: os.environ[k] for k in keep if k in os.environ}
+
+
 def as_user(user, code):
     """Python `code` run as `user` with an empty environment: (returncode, output)."""
     r = subprocess.run(
         [sys.executable, "-I", "-c", code],
         user=user.pw_uid, group=user.pw_gid, extra_groups=[],
-        env={"PATH": os.environ.get("PATH", "")}, capture_output=True, text=True, cwd="/", check=False,
+        env=clean_env(), capture_output=True, text=True, cwd="/", check=False,
     )  # fmt: skip
     return r.returncode, r.stdout + r.stderr
 
@@ -282,7 +288,7 @@ def user_broker(sandbox_user, monkeypatch):
     path = socket_dir / "sandbox.sock"
     proc = start_broker(
         path, user=sandbox_user.pw_uid, group=sandbox_user.pw_gid, extra_groups=[], cwd="/",
-        env={"PATH": os.environ.get("PATH", "")},
+        env=clean_env(),
     )  # fmt: skip
     monkeypatch.setenv(SOCKET_ENV, str(path))
     yield proc
