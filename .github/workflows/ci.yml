@@ -14,6 +14,8 @@ env:
   COMPILER_REPO: qiskit-community/bicycle-architecture-compiler
   COMPILER_COMMIT: bed7e8aba4cc0fb86311b7fa6dad6217c0fce7cb
   QRE_COMPILER_DIR: ${{ github.workspace }}/bicycle-compiler/target/release
+  # qdk sends usage data to Microsoft's Application Insights by default; not from CI runs.
+  QDK_PYTHON_TELEMETRY: none
 
 jobs:
   test:

@@ -39,7 +39,10 @@ python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 pip install -e . --no-deps
+set QDK_PYTHON_TELEMETRY=none
 ```
+
+The last line turns off QDK's telemetry: by default the `qdk` package, imported by every run, sends usage data to Microsoft's Application Insights in release builds. CI and the demo image set it too (in PowerShell: `$env:QDK_PYTHON_TELEMETRY = "none"`; to keep it, put it in your user environment variables).
 
 The bicycle compiler is IBM's, and I call it by path without editing it. I used commit `bed7e8a` of [qiskit-community/bicycle-architecture-compiler](https://github.com/qiskit-community/bicycle-architecture-compiler):
 
