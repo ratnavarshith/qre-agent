@@ -3,7 +3,8 @@ the host will use it. No LLM call is made (there is no network, and the key is n
 
     python scripts/smoke_image.py IMAGE [--commit SHA] [--lock ci/bicycle-Cargo.lock]
 
-Checks: /healthz (versions, the compiler's commit and Cargo.lock hash, the measurement tables'
+Checks: GET / loads the page (with its policy and no outside URL) and /limits fails closed with no
+network; /healthz (versions, the compiler's commit and Cargo.lock hash, the measurement tables'
 hashes against the ones recorded in the image); the server and the broker run as different
 non-root users; a build_circuit call goes through the broker and runs as the sandbox user, with
 none of the server's environment; the sandbox user can't read the server's /proc/<pid>/environ;
@@ -75,6 +76,18 @@ c = json.loads(t.call('build_benchmark', {'family': 'qft', 'n': 4}))
 s = json.loads(t.call('estimate_surface', {'circuit_id': c['circuit_id']}))
 b = json.loads(t.call('estimate_bicycle', {'circuit_id': c['circuit_id'], 'code': 'two-gross'}))
 print(json.dumps({'surface': s.get('physical_qubits', s), 'bicycle': b.get('physical_qubits', b)}))
+"""
+PAGE = """
+import json, re, urllib.request as u
+r = u.urlopen('http://127.0.0.1:8080/', timeout=5)
+body = r.read().decode()
+limits = json.loads(u.urlopen('http://127.0.0.1:8080/limits', timeout=30).read().decode())
+print(json.dumps({
+    'status': r.status, 'type': r.headers['content-type'],
+    'csp': r.headers.get('content-security-policy', ''), 'title': '<title>' in body,
+    'calls': '/estimate' in body and '/limits' in body,
+    'urls': sorted(set(re.findall(r'https?://[A-Za-z0-9./_-]+', body))), 'limits': limits,
+}))
 """
 READ_ENVIRON = "import sys; open('/proc/' + sys.argv[1] + '/environ').read()"
 
@@ -158,6 +171,35 @@ class Smoke:
             "the measurement tables' hashes are the recorded ones",
             tables == recorded and len(tables) == 2,
             json.dumps(tables),
+        )
+
+    def test_page(self):
+        code, out, err = self.run_python(PAGE)
+        got = json.loads(out) if code == 0 and out else {}
+        self.check(
+            "GET / serves the page",
+            got.get("status") == 200
+            and got.get("type", "").startswith("text/html")
+            and got.get("title")
+            and got.get("calls"),
+            (err or out)[-300:],
+        )
+        self.check(
+            "the page's policy forbids everything but itself",
+            "default-src 'none'" in got.get("csp", "") and "unsafe" not in got.get("csp", ""),
+            got.get("csp", ""),
+        )
+        self.check(
+            "the page names no URL but the repository",
+            got.get("urls") == ["https://github.com/ratnavarshith/qre-agent"],
+            str(got.get("urls")),
+        )
+        # no network: the demo can't read its key's budget, so it must say it isn't accepting runs
+        limits = got.get("limits", {})
+        self.check(
+            "with the budget unreadable, /limits says not accepting (budget_unknown)",
+            limits.get("accepting_runs") is False and limits.get("reason") == "budget_unknown",
+            str(limits),
         )
 
     def test_users(self):
@@ -277,6 +319,7 @@ def main():
         time.sleep(3)
         smoke.note_memory("idle, ready")
         smoke.test_health(health)
+        smoke.test_page()
         smoke.test_users()
         smoke.test_broker_build()
         smoke.test_volume()

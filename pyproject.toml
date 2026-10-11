@@ -16,7 +16,7 @@ demo = ["fastapi", "uvicorn"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-qre_agent = ["py.typed"]
+qre_agent = ["py.typed", "static/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

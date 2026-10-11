@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quantum resource estimates</title>
+<style>
+:root {
+  --bg: #fbfbfa; --fg: #1b1d1f; --muted: #5d6368; --line: #d9dcdf; --card: #ffffff;
+  --accent: #1f5fbf; --accent-fg: #ffffff;
+  --good: #14693a; --good-bg: #e3f4ea; --bad: #a3231c; --bad-bg: #fbe7e5;
+  --warn: #7a5200; --warn-bg: #fff3d6;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a; --fg: #e6e8ea; --muted: #9aa1a8; --line: #343a40; --card: #1c1f24;
+    --accent: #6ea6ff; --accent-fg: #0c1118;
+    --good: #7fd9a2; --good-bg: #17301f; --bad: #ff9d96; --bad-bg: #3a1c1a;
+    --warn: #f2c66b; --warn-bg: #33290f;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+main { max-width: 760px; margin: 0 auto; padding: 20px 16px 48px; }
+h1 { font-size: 1.5rem; margin: 0 0 8px; line-height: 1.25; }
+h2 { font-size: 1.05rem; margin: 24px 0 8px; }
+p { margin: 0 0 12px; }
+a { color: var(--accent); }
+.muted { color: var(--muted); font-size: 0.9rem; }
+.box { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+#status { margin: 16px 0 12px; }
+#status.warn { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+label { display: block; font-weight: 600; margin-bottom: 6px; }
+textarea {
+  width: 100%; min-height: 120px; resize: vertical; padding: 10px; font: inherit;
+  color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+}
+textarea:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.row .grow { flex: 1 1 auto; }
+button {
+  font: inherit; padding: 9px 16px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--card); color: var(--fg); cursor: pointer; min-height: 44px;
+}
+button.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); font-weight: 600; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+[hidden] { display: none !important; }
+#progress { margin: 8px 0 0; padding-left: 22px; }
+#progress li { margin: 2px 0; }
+#error { border-color: var(--bad); background: var(--bad-bg); color: var(--bad); margin-top: 16px; }
+.badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-weight: 600; }
+.badge.good { background: var(--good-bg); color: var(--good); }
+.badge.bad { background: var(--bad-bg); color: var(--bad); }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+td.num { font-variant-numeric: tabular-nums; }
+th[scope="col"] { font-size: 0.9rem; }
+th[scope="row"] { font-weight: 500; color: var(--muted); font-size: 0.9rem; white-space: nowrap; padding-right: 14px; }
+.answer { white-space: pre-wrap; overflow-wrap: anywhere; }
+ul.plain { margin: 6px 0 0; padding-left: 20px; }
+details { margin-top: 16px; }
+summary { cursor: pointer; font-weight: 600; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; margin: 8px 0 0; }
+dt { color: var(--muted); }
+dd { margin: 0; overflow-wrap: anywhere; }
+footer { margin-top: 32px; }
+@media (max-width: 480px) {
+  main { padding-top: 14px; }
+  button { flex: 1 1 auto; }
+  dl { grid-template-columns: 1fr; }
+  dt { margin-top: 6px; }
+}
+</style>
+</head>
+<body>
+<main>
+  <h1>Quantum resource estimates</h1>
+  <p>This is a student project about how many physical qubits and how much time a quantum algorithm needs once you add error correction. You type a problem in plain English, an LLM agent builds the circuit and runs two estimators (Microsoft's QDK for the surface code, IBM's bicycle compiler for the gross codes), and a separate checker compares the numbers in the answer to what the tools actually returned. It runs on a small budget so it can stop for the day, and the agent still gets things wrong sometimes, which is why the checker is there.</p>
+  <p class="muted">Code, results and write-up: <a href="https://github.com/ratnavarshith/qre-agent">github.com/ratnavarshith/qre-agent</a></p>
+
+  <div id="status" class="box" role="status" aria-live="polite">Checking whether the demo is accepting runs…</div>
+
+  <label for="problem">Describe the problem</label>
+  <textarea id="problem" maxlength="1500" placeholder="For example: how many physical qubits does a 16-qubit QFT need?"></textarea>
+  <div class="row">
+    <span id="counter" class="muted grow">0 / 1500</span>
+    <button id="example" type="button">Use an example</button>
+  </div>
+  <div class="row">
+    <button id="run" type="button" class="primary" disabled>Run</button>
+    <button id="cancel" type="button" hidden>Cancel</button>
+    <span class="muted">Ctrl+Enter also runs it. A run takes about 10 to 60 seconds.</span>
+  </div>
+
+  <div id="error" class="box" role="alert" hidden></div>
+
+  <section id="progress-section" hidden>
+    <h2>Progress</h2>
+    <ol id="progress" aria-live="polite"></ol>
+  </section>
+
+  <section id="result" hidden>
+    <h2>Estimates</h2>
+    <div class="table-wrap"><table id="estimates"></table></div>
+    <p id="estimate-note" class="muted"></p>
+
+    <h2>The agent's answer</h2>
+    <div id="answer" class="box answer"></div>
+
+    <h2>Check</h2>
+    <p><span id="badge" class="badge"></span></p>
+    <p id="verify-note" class="muted"></p>
+    <ul id="failures" class="plain"></ul>
+
+    <h2>This run</h2>
+    <p id="routing"></p>
+    <p id="cost"></p>
+    <details>
+      <summary>Assumptions and versions</summary>
+      <dl id="details"></dl>
+    </details>
+  </section>
+
+  <footer class="muted">No accounts, no cookies. Your problem text is sent to an LLM provider (OpenRouter) and is not stored here.</footer>
+</main>
+
+<script>
+"use strict";
+const MAX = 1500;
+const EXAMPLE = "How many physical qubits and how much time does a 16-qubit QFT need at a physical error rate of 1e-4, on the surface code and on the gross code?";
+const REPO = "https://github.com/ratnavarshith/qre-agent";
+
+// What each error code from the server says to a person. Keep in sync with docs/demo-api.md
+// (tests/test_page.py checks that every code the server can send is here).
+const MESSAGES = {
+  invalid_request: "That request wasn't valid. Type between 1 and 1500 characters.",
+  body_too_large: "That request was too big.",
+  ip_busy: "You already have a run going. Wait for it to finish.",
+  ip_hourly_limit: "You've used all 4 runs for this hour.",
+  ip_daily_limit: "You've used all 10 runs for today.",
+  busy: "The demo is busy right now (every place is taken). Try again in a minute.",
+  daily_cap: "The demo's budget for today is used up. It starts again tomorrow (UTC).",
+  budget_exhausted: "The demo's budget is used up, so it's switched off. The code is public, so you can run it yourself.",
+  budget_unknown: "The demo can't check its own budget right now, so it's paused. Try again in a bit.",
+  timeout: "The run took longer than 4 minutes, so it was stopped.",
+  provider_busy: "The language model provider says the demo's key is at its limit for now. Try again in a minute.",
+  run_cap: "This run would have cost more than the per-run limit ($0.35), so it was stopped.",
+  provider_error: "The language model provider failed twice. Try again.",
+  internal: "Something broke on the server. Try again.",
+  network: "Couldn't reach the server.",
+  cut_off: "The connection ended before the answer arrived.",
+};
+const STEPS = {
+  build_benchmark: "Building a standard benchmark circuit",
+  build_circuit: "Running the agent's circuit code in the sandbox",
+  estimate_surface: "Estimating on the surface code",
+  estimate_bicycle: "Estimating on the bicycle (gross) code",
+  verify: "Checking the answer",
+};
+const ESCALATION = {
+  first_build: "the task needs custom circuit code",
+  verify_failed: "its answer failed the check",
+  no_answer: "it ran out of steps without an answer",
+  primary_error: "it hit an error",
+};
+const LIMIT_NOTES = {
+  daily_cap: MESSAGES.daily_cap,
+  budget_exhausted: MESSAGES.budget_exhausted,
+  budget_unknown: MESSAGES.budget_unknown,
+};
+
+const $ = (id) => document.getElementById(id);
+const state = { limits: null, running: false, controller: null };
+
+function node(tag, className, ...children) {
+  const e = document.createElement(tag);
+  if (className) e.className = className;
+  e.append(...children); // strings become text nodes: nothing here is parsed as HTML
+  return e;
+}
+
+function plural(n, word) { return n + " " + word + (n === 1 ? "" : "s"); }
+
+function minutes(seconds) {
+  const m = Math.ceil(seconds / 60);
+  return m <= 1 ? "a minute" : m < 120 ? plural(m, "minute") : plural(Math.ceil(m / 60), "hour");
+}
+
+function sig(x) { return String(Number(x.toPrecision(3))); }
+
+function formatNs(ns) {
+  if (typeof ns !== "number" || !isFinite(ns)) return "?";
+  const units = [[1, "ns"], [1e3, "µs"], [1e6, "ms"], [1e9, "s"], [6e10, "min"], [3.6e12, "h"], [8.64e13, "days"]];
+  let chosen = units[0];
+  for (const u of units) if (ns >= u[0]) chosen = u;
+  return sig(ns / chosen[0]) + " " + chosen[1];
+}
+
+function formatCount(x) { return typeof x === "number" ? x.toLocaleString("en-US") : "?"; }
+
+function formatError(x) {
+  if (typeof x !== "number") return "?";
+  return x === 0 ? "0" : x < 0.01 ? x.toExponential(2) : x.toFixed(3);
+}
+
+function formatCost(usd) {
+  if (typeof usd !== "number") return "?";
+  return "$" + (usd < 0.01 ? usd.toFixed(4) : usd.toFixed(3));
+}
+
+function describeError(code, message, retryAfter) {
+  let text = MESSAGES[code] || message || "Something went wrong (" + code + ").";
+  if (retryAfter && ["ip_hourly_limit", "ip_daily_limit"].includes(code)) {
+    text += " Try again in about " + minutes(retryAfter) + ".";
+  }
+  return text;
+}
+
+function showError(code, message, retryAfter) {
+  const box = $("error");
+  box.textContent = describeError(code, message, retryAfter);
+  box.hidden = false;
+}
+
+// What the status box says, and whether Run may be used, from GET /limits.
+function limitsNote(limits) {
+  if (!limits) return { ok: false, text: "Can't reach the server." };
+  if (!limits.accepting_runs) {
+    return { ok: false, text: LIMIT_NOTES[limits.reason] || "The demo isn't accepting runs right now." };
+  }
+  const left = limits.runs_left || {};
+  if (left.day <= 0) return { ok: false, text: MESSAGES.ip_daily_limit };
+  if (left.hour <= 0) return { ok: false, text: MESSAGES.ip_hourly_limit };
+  return {
+    ok: true,
+    text: "Accepting runs. You have " + plural(left.hour, "run") + " left this hour and " + left.day + " today.",
+  };
+}
+
+function updateControls() {
+  const note = limitsNote(state.limits);
+  const status = $("status");
+  status.textContent = note.text;
+  status.classList.toggle("warn", !note.ok);
+  if (!note.ok && state.limits && state.limits.reason === "budget_exhausted") {
+    const link = node("a", "", "Open the repository");
+    link.href = REPO;
+    status.append(" ", link);
+  }
+  const length = $("problem").value.trim().length;
+  $("counter").textContent = $("problem").value.length + " / " + MAX;
+  $("run").disabled = state.running || !note.ok || length === 0 || $("problem").value.length > MAX;
+  $("cancel").hidden = !state.running;
+  $("example").disabled = state.running;
+  $("problem").disabled = state.running;
+}
+
+async function refreshLimits() {
+  try {
+    const response = await fetch("/limits", { cache: "no-store" });
+    state.limits = response.ok ? await response.json() : null;
+  } catch (e) {
+    state.limits = null;
+  }
+  updateControls();
+}
+
+function addProgress(text) {
+  $("progress-section").hidden = false;
+  $("progress").append(node("li", "", text));
+}
+
+function row(table, label, cells) {
+  const tr = node("tr", "", node("th", "", label));
+  tr.firstChild.scope = "row";
+  for (const c of cells) tr.append(node("td", "num", c));
+  table.append(tr);
+}
+
+function renderTable(rows) {
+  const table = $("estimates");
+  table.replaceChildren();
+  const head = node("tr", "", node("th", "", ""));
+  for (const r of rows) {
+    const code = r.architecture === "bicycle" && r.code ? " (" + r.code + " code)" : r.architecture === "surface" ? " code" : "";
+    head.append(node("th", "", r.architecture + code));
+    head.lastChild.scope = "col";
+  }
+  table.append(node("thead", "", head));
+  const body = node("tbody", "");
+  table.append(body);
+  const put = (label, f) => row(body, label, rows.map(f));
+  put("Physical qubits", (r) => formatCount(r.physical_qubits));
+  put("Runtime", (r) => formatNs(r.runtime_ns));
+  put("Qubit-seconds", (r) => typeof r.physical_qubit_seconds === "number" ? sig(r.physical_qubit_seconds) : "?");
+  put("Logical qubits", (r) => formatCount(r.logical_qubits));
+  put("T gates", (r) => formatCount(r.t_count));
+  put("Rotations", (r) => formatCount(r.rotation_count));
+  put("Logical error", (r) => {
+    const budget = r.assumptions && r.assumptions.error_budget;
+    const bound = typeof budget === "number" ? " (budget " + budget.toExponential(0) + ")" : "";
+    return formatError(r.error) + bound + (r.passes === false ? ", over budget" : r.passes === true ? ", within budget" : "");
+  });
+  put("Physical error rate", (r) => r.assumptions ? String(r.assumptions.physical_error_rate) : "?");
+}
+
+function renderVerify(result) {
+  const badge = $("badge");
+  const v = result.verification;
+  const failures = $("failures");
+  failures.replaceChildren();
+  badge.className = "badge";
+  if (!v) {
+    badge.classList.add("bad");
+    badge.textContent = "Not verified";
+    $("verify-note").textContent = "The agent didn't give an answer that could be checked, so there is nothing to compare.";
+    return;
+  }
+  if (v.passed) {
+    badge.classList.add("good");
+    badge.textContent = result.verify_passed_first_try ? "Verified" : "Verified after one retry";
+    $("verify-note").textContent = "Every number in the answer matches a number the tools returned, and the basic sanity checks pass. That doesn't prove the circuit is the one you meant.";
+    return;
+  }
+  badge.classList.add("bad");
+  badge.textContent = "Not verified";
+  $("verify-note").textContent = "The checker found problems with this answer. Don't trust the numbers in it:";
+  for (const f of v.failures || []) failures.append(node("li", "", f.check + ": " + f.reason));
+}
+
+function renderRouting(result) {
+  const r = result.routing || {};
+  let text = "Answered by " + (r.answered_by || "?") + ".";
+  if (r.escalated) {
+    text = (r.primary_model || "The first model") + " handed this to " + (r.strong_model || "a stronger model") +
+      (ESCALATION[r.reason] ? " because " + ESCALATION[r.reason] : "") + ". " + (r.answered_by || "The stronger model") + " gave the answer.";
+  }
+  $("routing").textContent = text;
+  $("cost").textContent = "Cost of this run: " + formatCost(result.cost_usd) + " in " + plural(result.steps || 0, "model call") +
+    ", " + (typeof result.latency_s === "number" ? result.latency_s + " s" : "? s") + ".";
+}
+
+function renderDetails(result) {
+  const dl = $("details");
+  dl.replaceChildren();
+  const add = (k, v) => dl.append(node("dt", "", k), node("dd", "", v));
+  const a = result.assumptions || {};
+  add("Physical error rate", String(a.physical_error_rate));
+  add("Error budget", String(a.error_budget));
+  add("Run id", String(result.run_id));
+  const r = result.routing || {};
+  if (r.cache_hits !== undefined && r.cache_hits !== null) add("Estimate cache", r.cache_hits + " hits, " + r.cache_misses + " misses");
+  for (const [k, v] of Object.entries(result.versions || {})) add(k, String(v));
+  for (const [k, v] of Object.entries(result.measurement_tables || {})) add("bicycle table " + k, String(v).slice(0, 12));
+}
+
+function renderResult(result) {
+  const rows = Array.isArray(result.table) ? result.table : [];
+  $("result").hidden = false;
+  if (rows.length) {
+    renderTable(rows);
+    $("estimate-note").textContent = "Physical qubits and runtime are for the whole computation. The bicycle result uses the code named in its column.";
+  } else {
+    $("estimates").replaceChildren();
+    $("estimate-note").textContent = "No estimate was produced.";
+  }
+  const answer = result.answer && result.answer.summary;
+  $("answer").textContent = answer || "The agent didn't give an answer.";
+  renderVerify(result);
+  renderRouting(result);
+  renderDetails(result);
+}
+
+function handleEvent(event) {
+  if (event.event === "accepted") {
+    if (event.queue_position === 1) addProgress("Waiting for a free place: you're next.");
+    else if (event.queue_position > 1) addProgress("Waiting in line: " + plural(event.queue_position - 1, "run") + " ahead of you.");
+    else addProgress("Started.");
+  } else if (event.event === "step") {
+    addProgress(STEPS[event.tool] || "Calling " + event.tool);
+  } else if (event.event === "escalated") {
+    addProgress("Handing the problem to a stronger model.");
+  } else if (event.event === "result") {
+    renderResult(event);
+    return true;
+  } else if (event.event === "error") {
+    showError(event.code, event.message);
+    return true;
+  }
+  return false; // "ping" and anything new
+}
+
+async function run() {
+  const problem = $("problem").value.trim();
+  if (!problem || state.running) return;
+  state.running = true;
+  state.controller = new AbortController();
+  $("error").hidden = true;
+  $("result").hidden = true;
+  $("progress").replaceChildren();
+  $("progress-section").hidden = true;
+  updateControls();
+  let finished = false;
+  try {
+    const response = await fetch("/estimate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ problem }),
+      signal: state.controller.signal,
+    });
+    if (!response.ok) {
+      let body = null;
+      try { body = await response.json(); } catch (e) { body = null; }
+      const err = (body && body.error) || {};
+      showError(err.code || "http_" + response.status, err.message, Number(response.headers.get("Retry-After")) || 0);
+      finished = true;
+    } else {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let newline;
+        while ((newline = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (line && handleEvent(JSON.parse(line))) finished = true;
+        }
+      }
+    }
+  } catch (e) {
+    if (e && e.name === "AbortError") {
+      addProgress("Cancelled.");
+      finished = true;
+    } else {
+      showError("network");
+      finished = true;
+    }
+  }
+  if (!finished) showError("cut_off");
+  state.running = false;
+  state.controller = null;
+  await refreshLimits();
+}
+
+$("problem").addEventListener("input", updateControls);
+$("problem").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !$("run").disabled) run();
+});
+$("example").addEventListener("click", () => { $("problem").value = EXAMPLE; updateControls(); $("problem").focus(); });
+$("run").addEventListener("click", run);
+$("cancel").addEventListener("click", () => { if (state.controller) state.controller.abort(); });
+updateControls();
+refreshLimits();
+</script>
+</body>
+</html>

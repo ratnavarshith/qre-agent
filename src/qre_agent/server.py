@@ -3,17 +3,19 @@
 demo.py. See docs/demo-api.md."""
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
 import math
 import os
+import re
 import secrets
 import threading
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from . import limits, sandbox_broker
@@ -26,6 +28,34 @@ MAX_BODY = 8192
 MAX_PROBLEM = 1500
 PING_S = 10
 SALT = secrets.token_hex(8)  # per process: the logs can tell addresses apart, not name them
+
+
+PAGE = Path(__file__).with_name("static") / "index.html"
+
+
+def load_page(path=PAGE):
+    """(html, headers) for GET /. The page has one inline script and one inline style, so the
+    Content-Security-Policy allows exactly those two by hash, plus fetches to this origin: nothing
+    else can load or run, which also holds if text from an answer ever got into the page."""
+    html = path.read_text(encoding="utf-8")
+
+    def source(tag):
+        found = re.findall(rf"<{tag}>(.*?)</{tag}>", html, re.DOTALL)
+        if len(found) != 1:
+            raise RuntimeError(f"{path} must have exactly one inline <{tag}>, found {len(found)}")
+        digest = hashlib.sha256(found[0].encode("utf-8")).digest()
+        return "'sha256-" + base64.b64encode(digest).decode() + "'"
+
+    policy = (
+        f"default-src 'none'; script-src {source('script')}; style-src {source('style')}; "
+        "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    )
+    return html, {
+        "Content-Security-Policy": policy,
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+        "Cache-Control": "no-cache",
+    }
 
 
 class Problem(BaseModel):
@@ -132,6 +162,12 @@ def create_app(demo, budget, limiter=None, slots=None, hops=1, versions=None):
         headers = {"Retry-After": str(max(1, math.ceil(e.retry_after)))} if e.retry_after else {}
         body = {"error": {"code": e.code, "message": e.message}}
         return JSONResponse(body, status_code=e.status, headers=headers)
+
+    page, page_headers = load_page()
+
+    @app.get("/", include_in_schema=False)
+    async def index():  # no budget check, no limit: it is a static file
+        return HTMLResponse(page, headers=page_headers)
 
     def address(request):
         peer = request.client.host if request.client else None

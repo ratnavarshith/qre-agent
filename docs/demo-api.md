@@ -36,6 +36,14 @@ Before the stream starts: an HTTP status and `{"error": {"code", "message"}}`, w
 
 After it started (`{"event": "error", ...}`): `timeout` (240 s), `busy` (no place in 60 s), `budget_exhausted` (OpenRouter 402/403 out of credit: see `llm.status_kind`), `provider_busy` (in-flight budget still full after the retries), `run_cap` (the run would pass $0.35), `provider_error` (both legs failed after retries), `internal` (no detail is sent; the log has the exception type).
 
+## The page
+
+`GET /` serves `src/qre_agent/static/index.html`: one file with its inline CSS and JS, no external script, font, image or request, and nothing to build. Serving it asks no budget and counts no run. It has a short blurb about the project and a link to the repository, a text box (1500 characters, with a counter), an example button, Run (also Ctrl+Enter) and Cancel (which drops the connection, so the server cancels the run). While a run goes it lists the steps. Then it shows the estimate table (surface and bicycle side by side: physical qubits, runtime with units, qubit-seconds, logical qubits, T gates, rotations, logical error against its budget), the agent's answer as plain text, a green "Verified" or red "Not verified" badge with the checker's reasons (and "after one retry" when it was), which model answered and why it was handed over, the cost of the run, and under a fold the assumptions, versions and table hashes. `GET /limits` drives the status line: runs left this hour and today for this address, and Run is disabled, with the reason, when the demo isn't accepting runs (`budget_exhausted`, `daily_cap`, `budget_unknown`) or the address has none left. Every error code has a sentence in the page.
+
+Everything from the server goes in with `textContent` and `createElement`, never as HTML: the page has no `innerHTML`. The `Content-Security-Policy` allows the page's one script and one style by hash (computed when the app starts, so editing the page needs no second edit), fetches to its own origin, and nothing else: `default-src 'none'`, no inline handlers, no `style` attributes, no framing, no forms. `tests/test_page.py` holds these properties, that every error code the server can send has a message, and that the page reads fields that exist. The script itself is checked by hand in a browser (there is no JS test runner here): a normal run, an escalation, a failed verify, a run without an answer, an error, Cancel, the limit and budget states, 375 px wide, and an answer containing `<script>`. The image's smoke test loads `/`.
+
+Two sharp edges: after Cancel the Run button comes back at once, but the server keeps the address's slot until the cancelled run reaches its next LLM or tool call (seconds, up to one LLM call), so an immediate rerun can get "You already have a run going"; and "runs left" is per address as the server sees it (see the client address note below).
+
 ## The sandbox
 
 `build_circuit`'s code runs behind the sandbox broker, as a separate user, when `QRE_SANDBOX_SOCKET` is set. The server logs how it runs at startup, and with `QRE_SANDBOX_REQUIRED=1` it refuses to start without the broker (see docs/agent-design.md, Sandbox). The container sets both (docs/demo-image.md).
@@ -52,7 +60,7 @@ After it started (`{"event": "error", ...}`): `timeout` (240 s), `busy` (no plac
 | per day | stop accepting at $0.75 `usage_daily` on the key |
 | key | stop for good below $0.40 left |
 
-The daily cap and the stop level come from `GET https://openrouter.ai/api/v1/key` (`limit_remaining`, `effective_budget.remaining_usd`, `usage_daily`), asked at most once every 30 s, so they survive a restart and count what other uses of the key spent. Runs already going can pass the daily cap; the per-run cap bounds that. `GET /limits` returns `accepting_runs`, the `reason` if not, and this address's `runs_left`. `GET /healthz` returns the versions and `accepting_runs` without any outside call. There is no docs page.
+The daily cap and the stop level come from `GET https://openrouter.ai/api/v1/key` (`limit_remaining`, `effective_budget.remaining_usd`, `usage_daily`), asked at most once every 30 s, so they survive a restart and count what other uses of the key spent. Runs already going can pass the daily cap; the per-run cap bounds that. `GET /limits` returns `accepting_runs`, the `reason` if not, and this address's `runs_left`. `GET /healthz` returns the versions and `accepting_runs` without any outside call. `GET /` is the page (below). There is no docs page.
 
 ## A client that leaves
 
