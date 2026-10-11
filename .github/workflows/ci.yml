@@ -57,7 +57,7 @@ jobs:
             bicycle-compiler/target
             ~/.cargo/registry
             cache
-          key: bicycle-${{ runner.os }}-${{ env.COMPILER_COMMIT }}-${{ hashFiles('ci/bicycle-Cargo.lock') }}
+          key: bicycle-v2-${{ runner.os }}-${{ env.COMPILER_COMMIT }}-${{ hashFiles('ci/bicycle-Cargo.lock') }}
 
       - name: Build the compiler
         working-directory: bicycle-compiler
@@ -65,17 +65,24 @@ jobs:
           cp "$GITHUB_WORKSPACE/ci/bicycle-Cargo.lock" Cargo.lock
           cargo build --release --locked -F bicycle_compiler/rsgridsynth -p bicycle_compiler -p bicycle_numerics
 
+      # Each code is generated in a directory of its own and moved into cache/: the compiler checks
+      # its output directory by creating and deleting a file in it, and two runs in one directory
+      # delete each other's (NotFound), so this step failed whenever the cache was cold.
       - name: Generate lookup tables
         run: |
           mkdir -p cache
           pids=""
           for code in gross two-gross; do
             if [ ! -s "cache/table_$code" ]; then
-              "$QRE_COMPILER_DIR/bicycle_compiler" "$code" generate "cache/table_$code" &
+              mkdir -p "work-$code"
+              "$QRE_COMPILER_DIR/bicycle_compiler" "$code" generate "work-$code/table_$code" &
               pids="$pids $!"
             fi
           done
           for pid in $pids; do wait "$pid"; done
+          for code in gross two-gross; do
+            if [ -f "work-$code/table_$code" ]; then mv "work-$code/table_$code" cache/; fi
+          done
 
       - name: Save compiler build and lookup tables
         if: steps.compiler-cache.outputs.cache-hit != 'true'
@@ -164,7 +171,7 @@ jobs:
             bicycle-compiler/target
             ~/.cargo/registry
             cache
-          key: bicycle-${{ runner.os }}-${{ env.COMPILER_COMMIT }}-${{ hashFiles('ci/bicycle-Cargo.lock') }}
+          key: bicycle-v2-${{ runner.os }}-${{ env.COMPILER_COMMIT }}-${{ hashFiles('ci/bicycle-Cargo.lock') }}
 
       - name: Build the compiler
         working-directory: bicycle-compiler
@@ -172,17 +179,24 @@ jobs:
           cp "$GITHUB_WORKSPACE/ci/bicycle-Cargo.lock" Cargo.lock
           cargo build --release --locked -F bicycle_compiler/rsgridsynth -p bicycle_compiler -p bicycle_numerics
 
+      # Each code is generated in a directory of its own and moved into cache/: the compiler checks
+      # its output directory by creating and deleting a file in it, and two runs in one directory
+      # delete each other's (NotFound), so this step failed whenever the cache was cold.
       - name: Generate lookup tables
         run: |
           mkdir -p cache
           pids=""
           for code in gross two-gross; do
             if [ ! -s "cache/table_$code" ]; then
-              "$QRE_COMPILER_DIR/bicycle_compiler" "$code" generate "cache/table_$code" &
+              mkdir -p "work-$code"
+              "$QRE_COMPILER_DIR/bicycle_compiler" "$code" generate "work-$code/table_$code" &
               pids="$pids $!"
             fi
           done
           for pid in $pids; do wait "$pid"; done
+          for code in gross two-gross; do
+            if [ -f "work-$code/table_$code" ]; then mv "work-$code/table_$code" cache/; fi
+          done
 
       # Estimates are keyed on the circuit, assumptions, versions and estimator code, so a hit is
       # never stale; the key includes the estimator sources only to start a fresh cache when they
