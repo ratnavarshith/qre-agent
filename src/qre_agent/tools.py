@@ -34,6 +34,7 @@ ENV_SET = {  # fixed values: one thread per library, so the process limit counts
 }  # fmt: skip
 SOCKET_ENV = "QRE_SANDBOX_SOCKET"  # the sandbox broker's socket, when build_circuit runs behind one
 TIMEOUT_S = 60
+MAX_QPY_BYTES = 2**20  # what a build may hand back; checked before qiskit parses it
 TOOL_TIMEOUT_S = 180  # an estimate; the slowest seen in the evals took under 1 s in-process
 RUNNER = Path(__file__).with_name("sandbox_runner.py")
 STANDARD_GATES = set(get_standard_gate_name_mapping())
@@ -143,6 +144,15 @@ def killed_by(returncode, limits):
         return f"was killed by signal {signum}"
 
 
+def check_size(size):
+    """SandboxError if a circuit file is over MAX_QPY_BYTES: the server parses these bytes in the
+    process that holds the API key, so it doesn't parse more than a real circuit needs."""
+    if size > MAX_QPY_BYTES:
+        raise SandboxError(
+            f"the circuit file is {size:,} bytes, over the {MAX_QPY_BYTES / 2**20:g} MB limit"
+        )
+
+
 def build_qpy(code, timeout=TIMEOUT_S, allowed=ALLOWED_IMPORTS, limits=None):
     """Run code that assigns a QuantumCircuit to `circuit` in a fresh child process of this one,
     with a minimal environment, sockets disabled, resource limits (Linux) and a timeout. Returns
@@ -174,6 +184,7 @@ def build_qpy(code, timeout=TIMEOUT_S, allowed=ALLOWED_IMPORTS, limits=None):
             if why := killed_by(r.returncode, shown):
                 raise SandboxError(f"the code {why}")
             raise SandboxError(err.read_bytes()[-2000:].decode("utf-8", errors="replace").strip())
+        check_size(out.stat().st_size)
         return out.read_bytes()
 
 
@@ -186,6 +197,7 @@ def run_circuit_code(code, timeout=TIMEOUT_S, allowed=ALLOWED_IMPORTS, limits=No
 
         check_code(code, allowed)
         data = ask(path, code, timeout)
+        check_size(len(data))
     else:
         data = build_qpy(code, timeout, allowed, limits)
     return qpy.load(io.BytesIO(data))[0]

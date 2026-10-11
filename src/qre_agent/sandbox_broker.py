@@ -18,13 +18,14 @@ import struct
 import sys
 import threading
 
-from .tools import SOCKET_ENV, TIMEOUT_S, SandboxError, build_qpy
+from .tools import MAX_QPY_BYTES, SOCKET_ENV, TIMEOUT_S, SandboxError, build_qpy, check_size
 
 log = logging.getLogger("qre_agent.sandbox")
 MAX_REQUEST = 256 * 1024  # bytes: the code is at most a few KB
-MAX_REPLY = 16 * 2**20  # the QPY file is at most 10 MB (the runner's file size limit), as base64
-MAX_BUSY = 4  # builds at once; the server runs at most 2 runs
-NPROC = 32  # processes and threads of the sandbox user: 4 builds at one or two threads each
+MAX_REPLY = 2 * MAX_QPY_BYTES  # bytes: a QPY file of at most MAX_QPY_BYTES, as base64 in JSON
+MAX_BUSY = 2  # builds at once, as many as the server's run slots: 2 x 512 MB at worst
+READ_S = 10  # a client has this long to send its request: a silent one must not hold a place
+NPROC = 32  # processes and threads of the sandbox user: 2 builds at one or two threads each
 
 
 def send(conn, message):
@@ -42,17 +43,23 @@ def read_exactly(conn, n):
     return data
 
 
+class TooLarge(ValueError):
+    pass
+
+
 def receive(conn, limit):
-    """One length-prefixed JSON message; ValueError if it is over `limit` bytes or not JSON."""
+    """One length-prefixed JSON message; ValueError if it is not JSON, TooLarge if it is over
+    `limit` bytes (refused before it is read)."""
     (n,) = struct.unpack(">I", read_exactly(conn, 4))
     if n > limit:
-        raise ValueError(f"message of {n} bytes is over the {limit} limit")
+        raise TooLarge(f"message of {n} bytes is over the {limit} limit")
     return json.loads(read_exactly(conn, n))
 
 
 def handle(conn, build=build_qpy):
     """Answers one request on `conn` and closes it. `build(code, timeout) -> bytes`."""
     try:
+        conn.settimeout(READ_S)
         request = receive(conn, MAX_REQUEST)
         if request.get("ping"):
             send(conn, {"ok": True})
@@ -82,10 +89,16 @@ def exchange(conn, code, timeout):
     try:
         send(conn, {"code": code, "timeout": timeout})
         reply = receive(conn, MAX_REPLY)
+    except TooLarge:
+        raise SandboxError(
+            f"the circuit file is over the {MAX_QPY_BYTES / 2**20:g} MB limit"
+        ) from None
     except (OSError, EOFError, ValueError) as e:
         raise SandboxError(f"the sandbox broker failed ({type(e).__name__})") from None
     if not reply.get("ok"):
         raise SandboxError(str(reply.get("error", "the sandbox broker failed")))
+    text = reply["qpy"]
+    check_size(len(text) // 4 * 3 - text.count("=", -2))  # the decoded size, before decoding
     return base64.b64decode(reply["qpy"])
 
 
@@ -140,6 +153,28 @@ def build_with_nproc(code, timeout):
     return build_qpy(code, timeout, limits={"nproc": NPROC})
 
 
+def admit(conn, build, busy):
+    """Starts a thread to answer `conn`, or, when `busy` (a semaphore of MAX_BUSY) has no place,
+    says so and closes it. A refused request never reaches a build."""
+    if not busy.acquire(blocking=False):
+        try:
+            conn.settimeout(READ_S)
+            receive(conn, MAX_REQUEST)  # read it first: closing on unread data resets the peer
+            send(conn, {"ok": False, "error": "the sandbox broker is busy"})
+        except (OSError, EOFError, ValueError):
+            pass
+        conn.close()
+        return
+
+    def work():
+        try:
+            handle(conn, build)
+        finally:
+            busy.release()
+
+    threading.Thread(target=work, daemon=True).start()
+
+
 def serve(path, build=build_with_nproc):
     """Listens on the Unix socket `path` (any local user may connect) until killed. Refuses to
     run as root: the point is a user with nothing to lose."""
@@ -153,23 +188,8 @@ def serve(path, build=build_with_nproc):
     server.listen(8)
     busy = threading.BoundedSemaphore(MAX_BUSY)
     log.info("sandbox broker listening on %s as uid %d", path, os.geteuid())
-
-    def work(conn):
-        try:
-            handle(conn, build)
-        finally:
-            busy.release()
-
     while True:
-        conn, _ = server.accept()
-        if busy.acquire(blocking=False):
-            threading.Thread(target=work, args=(conn,), daemon=True).start()
-        else:
-            try:
-                send(conn, {"ok": False, "error": "the sandbox broker is busy"})
-            except OSError:
-                pass
-            conn.close()
+        admit(server.accept()[0], build, busy)
 
 
 def main():

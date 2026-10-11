@@ -351,3 +351,106 @@ def test_the_broker_will_not_start_as_root(tmp_path):
         capture_output=True, text=True, timeout=30, check=False,
     )  # fmt: skip
     assert r.returncode != 0 and "must not run as root" in r.stderr
+
+
+# At most two builds at once, and a bound on what is parsed.
+
+
+def test_the_broker_builds_two_at_once_and_refuses_a_third():
+    assert sandbox_broker.MAX_BUSY == 2
+    gate, started, calls = threading.Event(), threading.Semaphore(0), []
+
+    def build(code, timeout):
+        calls.append(code)
+        started.release()
+        gate.wait(10)
+        return b"qpy"
+
+    busy = threading.BoundedSemaphore(sandbox_broker.MAX_BUSY)
+    clients = []
+    for name in ("one", "two"):
+        a, b = socket.socketpair()
+        send(a, {"code": name})
+        sandbox_broker.admit(b, build, busy)
+        clients.append(a)
+    assert started.acquire(timeout=10) and started.acquire(timeout=10)  # both are building
+
+    a, b = socket.socketpair()
+    send(a, {"code": "three"})
+    sandbox_broker.admit(b, build, busy)
+    assert receive(a, 1024) == {"ok": False, "error": "the sandbox broker is busy"}
+    assert sorted(calls) == ["one", "two"]  # the third never reached a build
+
+    gate.set()
+    for client in clients:
+        assert receive(client, 1024)["ok"]
+    for _ in range(200):  # the place is given back just after the reply
+        if busy.acquire(blocking=False):
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail("no place came free")
+
+
+def test_a_circuit_file_over_the_limit_is_refused_before_it_is_read_or_parsed(monkeypatch):
+    monkeypatch.setattr("qre_agent.tools.MAX_QPY_BYTES", 1000)
+    monkeypatch.setattr("qre_agent.tools.qpy.load", lambda *a: pytest.fail("parsed"))
+    many = (
+        "from qiskit import QuantumCircuit\ncircuit = QuantumCircuit(1)\n" + "circuit.x(0)\n" * 100
+    )
+    with pytest.raises(
+        SandboxError, match=r"the circuit file is [\d,]+ bytes, over the .* MB limit"
+    ):
+        run_circuit_code(many)
+
+
+def test_a_real_circuit_over_1_mb_is_refused():
+    code = "from qiskit import QuantumCircuit\ncircuit = QuantumCircuit(1)\n"
+    code += "for _ in range(30_000):\n    circuit.x(0)\n"  # 43 bytes a gate: about 1.3 MB
+    with pytest.raises(
+        SandboxError, match=r"the circuit file is [\d,]+ bytes, over the 1 MB limit"
+    ):
+        run_circuit_code(code)
+    assert run_circuit_code(code.replace("30_000", "20_000")).size() == 20_000  # 0.9 MB passes
+
+
+def test_bytes_from_the_broker_over_the_limit_are_not_parsed(monkeypatch):
+    monkeypatch.setenv(SOCKET_ENV, "/run/qre/sandbox.sock")
+    monkeypatch.setattr(sandbox_broker, "ask", lambda *a: b"\0" * (2**20 + 1))
+    monkeypatch.setattr("qre_agent.tools.qpy.load", lambda *a: pytest.fail("parsed"))
+    with pytest.raises(SandboxError, match="over the 1 MB limit"):
+        run_circuit_code(BUILD)
+
+
+def test_a_broker_reply_over_the_limit_is_refused_by_size_before_decoding():
+    big = sandbox_broker.base64.b64encode(b"\0" * (2**20 + 1)).decode()
+    a, b = socket.socketpair()
+    send(b, {"ok": True, "qpy": big})
+    with pytest.raises(
+        SandboxError, match="the circuit file is 1,048,5.. bytes, over the 1 MB limit"
+    ):
+        exchange(a, "x", 5)
+    ok = sandbox_broker.base64.b64encode(b"\0" * 2**20).decode()
+    send(b, {"ok": True, "qpy": ok})
+    assert len(exchange(a, "x", 5)) == 2**20  # exactly the limit passes
+
+
+def test_a_reply_frame_over_the_limit_is_refused_unread():
+    a, b = socket.socketpair()
+    b.sendall(struct.pack(">I", sandbox_broker.MAX_REPLY + 1))  # a header, nothing after it
+    with pytest.raises(SandboxError, match="over the 1 MB limit"):
+        exchange(a, "x", 5)
+
+
+def test_a_client_that_sends_nothing_does_not_hold_a_place(monkeypatch):
+    monkeypatch.setattr(sandbox_broker, "READ_S", 0.2)
+    busy = threading.BoundedSemaphore(1)
+    a, b = socket.socketpair()  # `a` never sends
+    sandbox_broker.admit(b, lambda *x: pytest.fail("built"), busy)
+    for _ in range(100):
+        if busy.acquire(blocking=False):
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail("the silent client still holds the place")
+    assert receive(a, 1024) == {"ok": False, "error": "bad request"}
