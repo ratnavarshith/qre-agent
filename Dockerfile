@@ -45,11 +45,15 @@ COPY --from=compiler /out/ /opt/bicycle/
 WORKDIR /cache
 # The search breaks cost ties in HashMap order, so every generated table differs a little (bicycle
 # timesteps by about 1%): the tables of this image are these, and their hashes are recorded.
+# Each code gets a directory of its own: the compiler checks its output directory by creating and
+# deleting "dummy_file_check" in it, which two runs in one directory do to each other.
 RUN set -eu; mkdir tables; pids=""; \
     for code in gross two-gross; do \
-      /opt/bicycle/target/release/bicycle_compiler "$code" generate "tables/table_$code" & pids="$pids $!"; \
+      mkdir "work-$code"; \
+      /opt/bicycle/target/release/bicycle_compiler "$code" generate "work-$code/table_$code" & pids="$pids $!"; \
     done; \
     for pid in $pids; do wait "$pid"; done; \
+    for code in gross two-gross; do mv "work-$code/table_$code" tables/; done; \
     cd tables; sha256sum table_* > tables.sha256; \
     cat tables.sha256; ls -l
 
