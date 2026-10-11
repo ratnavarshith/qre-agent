@@ -423,16 +423,20 @@ def test_bytes_from_the_broker_over_the_limit_are_not_parsed(monkeypatch):
 
 
 def test_a_broker_reply_over_the_limit_is_refused_by_size_before_decoding():
-    big = sandbox_broker.base64.b64encode(b"\0" * (2**20 + 1)).decode()
-    a, b = socket.socketpair()
-    send(b, {"ok": True, "qpy": big})
+    def reply_with(size):
+        """The broker's end sends a reply of `size` bytes from a thread: a socket pair's buffer is
+        smaller than the reply, so sending first would block."""
+        a, b = socket.socketpair()
+        data = sandbox_broker.base64.b64encode(b" " * size).decode()
+        threading.Thread(target=send, args=(b, {"ok": True, "qpy": data}), daemon=True).start()
+        with a:
+            return exchange(a, "x", 5)
+
     with pytest.raises(
         SandboxError, match="the circuit file is 1,048,5.. bytes, over the 1 MB limit"
     ):
-        exchange(a, "x", 5)
-    ok = sandbox_broker.base64.b64encode(b"\0" * 2**20).decode()
-    send(b, {"ok": True, "qpy": ok})
-    assert len(exchange(a, "x", 5)) == 2**20  # exactly the limit passes
+        reply_with(2**20 + 1)
+    assert len(reply_with(2**20)) == 2**20  # exactly the limit passes
 
 
 def test_a_reply_frame_over_the_limit_is_refused_unread():
