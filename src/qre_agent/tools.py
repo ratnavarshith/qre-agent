@@ -3,9 +3,11 @@ name and always returns JSON. Circuits and results are passed between tools by i
 never re-types a circuit or a result. See docs/agent-design.md."""
 
 import ast
+import io
 import json
 import multiprocessing
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -18,6 +20,7 @@ from qiskit.circuit.library import get_standard_gate_name_mapping
 from . import bicycle, circuits, surface
 from .assumptions import load_assumptions
 from .cache import cache_key
+from .sandbox_runner import LIMITS as RUNNER_LIMITS
 from .verify import verify
 
 ALLOWED_IMPORTS = ("qiskit", "numpy", "math", "cmath", "fractions", "itertools", "functools")
@@ -26,6 +29,10 @@ BANNED_NAMES = {
     "globals", "locals", "vars", "getattr", "setattr", "delattr",
 }  # fmt: skip
 ENV_KEEP = ("PATH", "SYSTEMROOT", "TEMP", "TMP")  # nothing else, so no API keys
+ENV_SET = {  # fixed values: one thread per library, so the process limit counts few threads
+    "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1", "RAYON_NUM_THREADS": "1",
+}  # fmt: skip
+SOCKET_ENV = "QRE_SANDBOX_SOCKET"  # the sandbox broker's socket, when build_circuit runs behind one
 TIMEOUT_S = 60
 TOOL_TIMEOUT_S = 180  # an estimate; the slowest seen in the evals took under 1 s in-process
 RUNNER = Path(__file__).with_name("sandbox_runner.py")
@@ -118,36 +125,70 @@ def find_reset(circuit):
     return None
 
 
-def run_circuit_code(code, timeout=TIMEOUT_S, allowed=ALLOWED_IMPORTS):
-    """Run code that assigns a QuantumCircuit to `circuit` in a fresh process with a minimal
-    environment, sockets disabled and a timeout. Returns the circuit; raises SandboxError."""
+def killed_by(returncode, limits):
+    """What a child that ended on a signal hit, in words; None for an exit code. The numbers are
+    Linux's (SIGKILL 9, SIGXCPU 24, SIGXFSZ 25)."""
+    if returncode >= 0:
+        return None
+    named = {
+        24: f"used more than {limits['cpu_s']} s of CPU time",
+        25: f"wrote a file over {limits['fsize_mb']} MB",
+        9: "was killed (out of memory?)",
+    }
+    if (signum := -returncode) in named:
+        return named[signum]
+    try:
+        return f"was killed by {signal.Signals(signum).name}"
+    except ValueError:
+        return f"was killed by signal {signum}"
+
+
+def build_qpy(code, timeout=TIMEOUT_S, allowed=ALLOWED_IMPORTS, limits=None):
+    """Run code that assigns a QuantumCircuit to `circuit` in a fresh child process of this one,
+    with a minimal environment, sockets disabled, resource limits (Linux) and a timeout. Returns
+    the circuit as QPY bytes; raises SandboxError. Runs as this process's user: behind a broker,
+    that is the sandbox user (sandbox_broker.py)."""
     check_code(code, allowed)
-    env = {k: os.environ[k] for k in ENV_KEEP if k in os.environ}
+    env = {k: os.environ[k] for k in ENV_KEEP if k in os.environ} | ENV_SET
     with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp) / "circuit.qpy"
+        out, err = Path(tmp) / "circuit.qpy", Path(tmp) / "stderr"
+        command = [sys.executable, "-I", "-X", "utf8", str(RUNNER), str(out)]  # UTF-8, not cp1252
+        if limits:
+            command.append(json.dumps(limits))
         try:
-            r = subprocess.run(
-                [
-                    sys.executable,
-                    "-I",
-                    "-X",
-                    "utf8",
-                    str(RUNNER),
-                    str(out),
-                ],  # UTF-8 stdio, not cp1252
-                input=code.encode("utf-8"),  # bytes: text mode would use the console code page
-                capture_output=True,
-                env=env,
-                cwd=tmp,
-                timeout=timeout,
-                check=False,
-            )
+            with err.open("wb") as stderr:  # a file, so the file size limit also bounds it
+                r = subprocess.run(
+                    command,
+                    input=code.encode("utf-8"),  # bytes: text mode would use the console code page
+                    stdout=subprocess.DEVNULL,
+                    stderr=stderr,
+                    env=env,
+                    cwd=tmp,
+                    timeout=timeout,
+                    check=False,
+                )
         except subprocess.TimeoutExpired:
             raise SandboxError(f"timed out after {timeout} s") from None
         if r.returncode:
-            raise SandboxError(r.stderr.decode("utf-8", errors="replace").strip())
-        with out.open("rb") as f:
-            return qpy.load(f)[0]
+            shown = RUNNER_LIMITS | (limits or {})
+            if why := killed_by(r.returncode, shown):
+                raise SandboxError(f"the code {why}")
+            raise SandboxError(err.read_bytes()[-2000:].decode("utf-8", errors="replace").strip())
+        return out.read_bytes()
+
+
+def run_circuit_code(code, timeout=TIMEOUT_S, allowed=ALLOWED_IMPORTS, limits=None):
+    """The circuit `code` builds (see build_qpy). When QRE_SANDBOX_SOCKET is set the code runs in
+    the sandbox broker's process tree, as another user; there is then no fallback to running it
+    here if the broker is down."""
+    if path := os.environ.get(SOCKET_ENV):
+        from .sandbox_broker import ask
+
+        check_code(code, allowed)
+        data = ask(path, code, timeout)
+    else:
+        data = build_qpy(code, timeout, allowed, limits)
+    return qpy.load(io.BytesIO(data))[0]
 
 
 BENCHMARKS = {  # what build_benchmark builds, from circuits.py

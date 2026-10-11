@@ -16,9 +16,10 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from . import limits
+from . import limits, sandbox_broker
 from .demo import Cancelled, Demo, Hooks, new_run_id, versions_of
 from .limits import IpLimiter, KeyBudget, Rejected, client_ip
+from .tools import SOCKET_ENV
 
 log = logging.getLogger("qre_agent.demo")
 MAX_BODY = 8192
@@ -232,6 +233,18 @@ def log_run(ip, problem, run_id, outcome):
     )  # fmt: skip
 
 
+def check_sandbox(environ=os.environ):
+    """Logs how build_circuit will run. RuntimeError if a broker is configured and doesn't answer,
+    or if QRE_SANDBOX_REQUIRED=1 and there is none: the image sets it, so a missing broker is a
+    startup failure, not a silent fallback to running the code as the server's own user."""
+    mode, message = sandbox_broker.describe(environ)
+    if environ.get("QRE_SANDBOX_REQUIRED") == "1" and mode != "broker":
+        raise RuntimeError(f"{message} (QRE_SANDBOX_REQUIRED=1 needs the broker)")
+    if mode == "broker":
+        sandbox_broker.check(environ[SOCKET_ENV])
+    (log.info if mode == "broker" else log.warning)(message)
+
+
 def build():
     """(demo, budget, proxy hops) from the environment; RuntimeError, naming the variable, if the
     OpenRouter key is missing. No Anthropic key is read: the Claude fallback is off."""
@@ -242,6 +255,7 @@ def build():
     from .tools import SCHEMAS
 
     key = api_key("OPENROUTER_API_KEY")
+    check_sandbox()
     demo = Demo(
         OpenRouter(SCHEMAS),
         OpenRouter(SCHEMAS, cache=True),  # Anthropic prompt caching on the strong model

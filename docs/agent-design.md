@@ -56,7 +56,7 @@ The agent's code runs in a separate `python -I` process with these layers:
 
 1. **Static check, before anything runs.** Imports must come from the allowlist: qiskit, numpy, math, cmath, fractions, itertools, functools. Relative imports are rejected. So are names and attributes that start with `__`, and `eval`, `exec`, `compile`, `open`, `input`, `breakpoint`, `globals`, `locals`, `vars`, `getattr`, `setattr` and `delattr`.
 2. **No network.** Before the code runs, the runner replaces `socket.socket.__init__`, `socket.getaddrinfo` and `socket.create_connection` with functions that raise.
-3. **Minimal environment.** Only `PATH`, `SYSTEMROOT`, `TEMP` and `TMP` are passed through, so the child never sees API keys. It runs in a fresh temporary directory.
+3. **Minimal environment.** Only `PATH`, `SYSTEMROOT`, `TEMP` and `TMP` are passed through (plus `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS` and `RAYON_NUM_THREADS` set to 1), so the child never sees API keys. It runs in a fresh temporary directory. Its stderr goes to a file there, and only the last 2,000 bytes are read back.
 4. **Timeout.** 60 s by default, and the process is killed when it runs out.
 5. **Audit hook** (`sys.addaudithook`, installed just before the agent's code runs):
    - `open` is allowed anywhere inside the run's temporary directory.
@@ -75,7 +75,41 @@ The circuit comes back as QPY.
   - `ctypes.memmove`, `ctypes.cast` and `ctypes.c_int` also raise no event. `id(obj)` is the object's address in CPython, so an escape can read or write the interpreter's memory without any blocked event, including memory the hook uses.
 - The socket patch only covers the `socket` module's Python layer.
 
-That's acceptable for code our own LLM writes from a problem statement. It isn't acceptable for untrusted users' code. For that, use a container (e.g. `docker run --network none`, read-only filesystem, CPU and memory limits). That's on the to-build list.
+That's acceptable for code our own LLM writes from a problem statement. For the public demo (Phase 4) there are two more layers, below.
+
+### Resource limits and a separate user (Phase 4, PR 3)
+
+**Resource limits** (Linux only; `sandbox_runner.LIMITS`, set by the runner before it reads the code, soft and hard, so the code can't raise them: a test tries). They come from the largest real `build_circuit` calls in the 449 in `runs/` (273 successful: at most 33 qubits, 258 operations, 10 KB of code). Replaying the nine largest through the runner on Windows gave 0.44 to 0.55 s of CPU (nearly all of it importing qiskit), 0.7 s wall, a 66 MB working set and a 12 KB QPY file at most; the slowest call in the traces took 0.84 s wall.
+
+| limit | value | against the real maximum |
+|---|---|---|
+| CPU time (`RLIMIT_CPU`) | 10 s (SIGXCPU; SIGKILL 2 s later) | 0.55 s: 18x |
+| memory (`RLIMIT_DATA`: heap and private writable mappings, not shared libraries) | 512 MB | 66 MB working set, measured on Windows, not on Linux: about 8x. A test builds a 33-qubit circuit with half the limit |
+| file size (`RLIMIT_FSIZE`) | 10 MB | 12 KB. Python ignores SIGXFSZ, so the write fails with "File too large" |
+| core files | 0 | |
+| processes and threads (`RLIMIT_NPROC`) | 32, **only behind the broker** | counts every process and thread of the *user*, so it means something only for a user of its own; the BLAS and rayon thread counts are set to 1 so a build uses two or so |
+
+A child that dies on a signal is reported in words (`the code used more than 10 s of CPU time`); a memory bomb gets a `MemoryError` with the traceback. The wall-clock timeout (60 s) is unchanged. The limits are not applied off Linux (the local Windows dev setup), and root is exempt from `RLIMIT_NPROC`.
+
+**A separate user** (`src/qre_agent/sandbox_broker.py`). The server holds the OpenRouter key. With `QRE_SANDBOX_SOCKET=<path>` set, `run_circuit_code` doesn't start the child itself: it sends the code over a Unix socket to the broker, which runs as an unprivileged user of its own, with an empty environment, and runs the same child (`tools.build_qpy`) and sends the QPY bytes back. The code then runs as a user that can't read the server's `/proc/<pid>/environ` or memory (ptrace and `/proc/<pid>/mem` need the same user), its files or its directories. Nothing is shared but the socket, so the results come back over it, not through a shared directory. The broker refuses to run as root, caps the client's timeout at 60 s, runs at most 4 builds at once and accepts requests of at most 256 KB; the socket is mode 0666, so any local user (including the sandboxed code, which has the broker's own uid) can ask it to build. Start it as that user, then the server:
+
+```
+setpriv --reuid=<sandbox> --regid=<sandbox> --clear-groups --no-new-privs env -i PATH=$PATH \
+    python -m qre_agent.sandbox_broker /run/qre/sandbox.sock
+QRE_SANDBOX_SOCKET=/run/qre/sandbox.sock QRE_SANDBOX_REQUIRED=1 python -m qre_agent.server   # as the server's user
+```
+
+(The Dockerfile's entrypoint in PR 4 does this as root, then drops to the two users.) **No silent fallback.** With a socket configured and the broker down, `build_circuit` returns `SandboxError: the sandbox broker is unavailable` and runs nothing; the server pings the broker at startup and refuses to start if it doesn't answer; `QRE_SANDBOX_REQUIRED=1` (the image sets it) refuses to start without a broker. Without a socket, the child runs as the same user, and the server logs one line at startup: `sandbox: no broker ... same user as this process, with resource limits` (Linux), `... without resource limits (Linux only)` (Windows), or `WARNING no broker ... running as root` (the one to fix). Local development and CI are unchanged.
+
+**What this does not protect against.**
+- **Network egress.** The socket patch only blocks Python's `socket` module. Cloud Run can't filter egress per process or per user, so code that escapes the audit hook can reach the internet, from the instance. It would find no key (not in its environment, not readable from the server's process), but it can be used to send traffic.
+- **The kernel and the container runtime.** Both users share one kernel (Cloud Run's gVisor or microVM). An exploit of either, or of a setuid binary in the image, gives root in the container and so the server's memory and key.
+- **The server parses what the sandbox sends.** It loads the QPY bytes with qiskit's loader, in the process that holds the key; a bug in the loader is reachable from the sandboxed code.
+- **Files.** The file size limit is per file. Cloud Run's filesystem is in memory, so a loop writing 10 MB files for its 10 s of CPU could fill the instance's RAM. The fix is a size-limited memory volume for the broker's `TMPDIR` (the deploy, PR 4).
+- **Memory, CPU and threads are per process.** Four builds at once can use 4 x 512 MB on a 2 GiB instance that also holds the server and the estimates; `RLIMIT_DATA` leaves out file-backed and shared mappings.
+- **Whether the limits are enforced in gVisor** is not verified; a post-deploy check is in `docs/demo-api.md`.
+
+**Tests.** `tests/test_sandbox_limits.py` (Linux, any user: CPU, memory, file size, threads, limits can't be raised, headroom) and `tests/test_sandbox_broker.py` (the protocol on every platform; a real broker on a Unix socket as the current user; then, as root, a broker as another user: the code's uid, its environment, `/proc/<pid>/environ` and `/proc/<pid>/mem`, a file owned by the server, a planted file, the audit hook still blocking inside, a memory bomb followed by a normal build, a dead broker, the refusal to run as root). The root tests skip unless run as root on Linux; CI runs them with `sudo` as the user `nobody` (`QRE_REQUIRE_ROOT_TESTS=1` makes a skip a failure).
 
 ## Verifier checks
 
@@ -297,5 +331,5 @@ Code: `scripts/ci_gate.py`, config `evals/ci-gate.yaml`, jobs `changes` and `eva
 - A comparison tool that computes ratios and differences, so answers can state them and still pass check (c).
 - A check that both sides used the same physical error rate and error budget. Today (a) checks the circuit only.
 - Surfacing `passes: false` (error over budget) in the answer. The verifier doesn't require it yet.
-- A container sandbox for untrusted input.
+- The container itself (Dockerfile and a size-limited temp volume): Phase 4, PR 4.
 - Evals on more models, and the full 40-task run (see Evals).

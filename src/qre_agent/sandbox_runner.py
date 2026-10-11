@@ -1,8 +1,10 @@
 """Runs agent-written Qiskit code for tools.build_circuit in its own process: the code comes on
-stdin and must assign a QuantumCircuit to `circuit`, which is written as QPY to argv[1].
-Imports were checked before this runs; here sockets are disabled and an audit hook limits
-files and processes. A guardrail, not a security boundary. See docs/agent-design.md."""
+stdin and must assign a QuantumCircuit to `circuit`, which is written as QPY to argv[1]; argv[2]
+may be a JSON object that overrides LIMITS. Imports were checked before this runs; here, on Linux,
+resource limits are set first, sockets are disabled and an audit hook limits files and processes.
+A guardrail, not a security boundary. See docs/agent-design.md."""
 
+import json
 import os
 import socket
 import sys
@@ -10,6 +12,17 @@ import traceback
 
 from qiskit import QuantumCircuit, qpy
 
+# Resource limits (Linux), for the process and what it can start. Based on the largest real
+# build_circuit calls in 449 past traces (33 qubits, 258 operations, 10 KB of code): 0.6 s of CPU
+# (nearly all of it importing qiskit), 66 MB resident (measured on Windows), a 12 KB QPY file. See docs/agent-design.md.
+LIMITS = {
+    "cpu_s": 10,  # CPU seconds (the wall-clock timeout is the caller's)
+    "memory_mb": 512,  # RLIMIT_DATA: heap and private writable mappings, not shared libraries
+    "fsize_mb": 10,  # the largest file the process can write
+}
+# Also "nproc": RLIMIT_NPROC counts every process and thread of the *user*, so it only means
+# something for a user of its own: the sandbox broker passes it (sandbox_broker.NPROC), a process
+# on a shared user doesn't (a desktop user can have thousands of threads already).
 WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
 PROCESS_EVENTS = {
     "subprocess.Popen", "os.system", "os.exec", "os.spawn", "os.posix_spawn", "os.startfile",
@@ -21,6 +34,29 @@ FILESYSTEM_EVENTS = {
     "os.remove", "os.rename", "os.rmdir", "os.mkdir", "os.truncate", "os.chmod", "os.chown",
     "os.link", "os.symlink", "os.utime", "shutil.rmtree",
 }  # fmt: skip
+
+
+def apply_limits(limits):
+    """Lowers the resource limits (soft and hard, so the code can't raise them again). A no-op
+    off Linux. A limit above the current hard limit is left at that."""
+    if not sys.platform.startswith("linux"):
+        return
+    import resource
+
+    mb = 2**20
+    wanted = [
+        ("RLIMIT_CPU", limits["cpu_s"], 2),  # SIGXCPU at the soft limit, SIGKILL 2 s later
+        ("RLIMIT_DATA", limits["memory_mb"] * mb, 0),
+        ("RLIMIT_FSIZE", limits["fsize_mb"] * mb, 0),
+        ("RLIMIT_CORE", 0, 0),
+    ]
+    if "nproc" in limits:
+        wanted.append(("RLIMIT_NPROC", limits["nproc"], 0))
+    for name, soft, extra in wanted:
+        which = getattr(resource, name)
+        hard = resource.getrlimit(which)[1]
+        hard = soft + extra if hard == resource.RLIM_INFINITY else min(soft + extra, hard)
+        resource.setrlimit(which, (min(soft, hard), hard))
 
 
 def _no_network(*args, **kwargs):
@@ -61,6 +97,7 @@ def audit_hook(run_dir):
 
 
 def main():
+    apply_limits(LIMITS | (json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}))
     out, code = sys.argv[1], sys.stdin.buffer.read().decode("utf-8")  # UTF-8, not the code page
     socket.socket.__init__ = _no_network
     socket.getaddrinfo = socket.create_connection = _no_network

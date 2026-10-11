@@ -36,6 +36,10 @@ Before the stream starts: an HTTP status and `{"error": {"code", "message"}}`, w
 
 After it started (`{"event": "error", ...}`): `timeout` (240 s), `busy` (no place in 60 s), `budget_exhausted` (OpenRouter 402/403 out of credit: see `llm.status_kind`), `provider_busy` (in-flight budget still full after the retries), `run_cap` (the run would pass $0.35), `provider_error` (both legs failed after retries), `internal` (no detail is sent; the log has the exception type).
 
+## The sandbox
+
+`build_circuit`'s code runs behind the sandbox broker, as a separate user, when `QRE_SANDBOX_SOCKET` is set. The server logs how it runs at startup, and with `QRE_SANDBOX_REQUIRED=1` it refuses to start without the broker (see docs/agent-design.md, Sandbox). The container sets both.
+
 ## Limits
 
 | | |
@@ -64,7 +68,8 @@ That is only safe if the proxy in front appends the connecting address. Behind G
 
 1. **The client address.** The log holds only a salted hash of the address, so the check goes through the per-address counter. From one machine: send one real `POST /estimate` with `X-Forwarded-For: 1.2.3.4`. Then `GET /limits` three times: with no header, with `X-Forwarded-For: 1.2.3.4`, and with `X-Forwarded-For: 5.6.7.8`. If all three show `runs_left.hour` of 3, the address is the real one and the header is safe. If only the `1.2.3.4` one shows 3 and the others show 4, the rightmost entry is client-controlled: set `QRE_PROXY_HOPS` to the right count, or put the limits behind something that sets the address (and until then, treat the per-address limits as absent).
 2. **The real `/key` reply.** `limits.KeyBudget` was written from OpenRouter's documentation and tested with made-up replies. With the demo key set, call `GET /limits` and check that `accepting_runs` is true and `reason` is null (a wrong field name or shape would show as `budget_unknown`), and that the first run's cost in the log is close to the drop in the key's `limit_remaining`.
-3. **The out-of-credit path.** With a revoked or empty test key, a run should end in `budget_exhausted` and every request after it should get the 503.
+3. **The sandbox limits under Cloud Run's runtime.** The memory, process and file-size limits are `setrlimit` calls that gVisor may not enforce. In the deployed instance, build a circuit whose code allocates 2 GB (`import numpy as np; np.ones(200_000_000)`) through the broker, for example with a one-off `python -c` that calls `run_circuit_code`, and confirm a `MemoryError`; and check that the broker's temp directory is a size-limited volume.
+4. **The out-of-credit path.** With a revoked or empty test key, a run should end in `budget_exhausted` and every request after it should get the 503.
 
 ## Logs
 
