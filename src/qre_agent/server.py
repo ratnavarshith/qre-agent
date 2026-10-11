@@ -233,7 +233,7 @@ def log_run(ip, problem, run_id, outcome):
     )  # fmt: skip
 
 
-def check_sandbox(environ=os.environ):
+def check_sandbox(environ=os.environ, wait_s=10.0):
     """Logs how build_circuit will run. RuntimeError if a broker is configured and doesn't answer,
     or if QRE_SANDBOX_REQUIRED=1 and there is none: the image sets it, so a missing broker is a
     startup failure, not a silent fallback to running the code as the server's own user."""
@@ -241,7 +241,7 @@ def check_sandbox(environ=os.environ):
     if environ.get("QRE_SANDBOX_REQUIRED") == "1" and mode != "broker":
         raise RuntimeError(f"{message} (QRE_SANDBOX_REQUIRED=1 needs the broker)")
     if mode == "broker":
-        sandbox_broker.check(environ[SOCKET_ENV])
+        sandbox_broker.check(environ[SOCKET_ENV], wait_s)
     (log.info if mode == "broker" else log.warning)(message)
 
 

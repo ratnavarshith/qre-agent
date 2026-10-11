@@ -17,6 +17,7 @@ import socket
 import struct
 import sys
 import threading
+import time
 
 from .tools import MAX_QPY_BYTES, SOCKET_ENV, TIMEOUT_S, SandboxError, build_qpy, check_size
 
@@ -118,15 +119,21 @@ def ask(path, code, timeout=TIMEOUT_S):
         return exchange(conn, code, timeout)
 
 
-def check(path):
-    """RuntimeError, at startup, if the broker at `path` doesn't answer a ping."""
-    try:
-        with connect(path, 5) as conn:
-            send(conn, {"ping": True})
-            if not receive(conn, 1024).get("ok"):
-                raise ValueError("bad reply")
-    except (SandboxError, OSError, EOFError, ValueError) as e:
-        raise RuntimeError(f"the sandbox broker at {path} does not answer ({e})") from None
+def check(path, wait_s=0.0):
+    """RuntimeError, at startup, if the broker at `path` doesn't answer a ping within `wait_s`
+    seconds (it may still be starting: its socket exists a moment before it listens)."""
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            with connect(path, 5) as conn:
+                send(conn, {"ping": True})
+                if not receive(conn, 1024).get("ok"):
+                    raise ValueError("bad reply")
+            return
+        except (SandboxError, OSError, EOFError, ValueError) as e:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"the sandbox broker at {path} does not answer ({e})") from None
+            time.sleep(0.1)
 
 
 def describe(environ=os.environ):

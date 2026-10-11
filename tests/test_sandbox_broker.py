@@ -184,9 +184,25 @@ def test_startup_logs_the_mode_and_can_require_a_broker(caplog):
         server.check_sandbox({"QRE_SANDBOX_REQUIRED": "1"})
 
 
+def test_startup_waits_for_a_broker_that_is_still_starting(monkeypatch):
+    attempts = []
+
+    def connect(path, timeout):
+        attempts.append(path)
+        if len(attempts) < 4:  # its socket exists, but it is not listening yet
+            raise SandboxError("the sandbox broker is unavailable (ConnectionRefusedError)")
+        a, b = socket.socketpair()
+        threading.Thread(target=handle, args=(b, lambda *x: b""), daemon=True).start()
+        return a
+
+    monkeypatch.setattr(sandbox_broker, "connect", connect)
+    sandbox_broker.check("/run/qre/sandbox.sock", wait_s=5)
+    assert len(attempts) == 4  # refused three times, then it answered
+
+
 def test_startup_fails_when_the_configured_broker_does_not_answer(tmp_path):
     with pytest.raises(RuntimeError, match="does not answer"):
-        server.check_sandbox({SOCKET_ENV: str(tmp_path / "x.sock")})
+        server.check_sandbox({SOCKET_ENV: str(tmp_path / "x.sock")}, wait_s=0)
 
 
 # A real broker on a Unix socket, as the user running the tests (not root).

@@ -1,0 +1,19 @@
+# Nothing goes into the build context unless it is listed. That keeps out .env and every key,
+# notes/ (drafts), runs/ and results/ (traces and outputs), .claude/, .git, virtual environments
+# and caches (cache/ holds the 278 MB of tables on a dev machine; the image makes its own).
+*
+!Dockerfile
+!.dockerignore
+!docker/
+!src/
+!assumptions/
+!budgets.yaml
+!pyproject.toml
+!requirements.txt
+!requirements-demo.txt
+!ci/bicycle-Cargo.lock
+!tests/
+**/__pycache__
+**/*.pyc
+**/.env
+**/.env.*

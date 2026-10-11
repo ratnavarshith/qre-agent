@@ -209,3 +209,85 @@ jobs:
             results/ci/gate
             runs
           if-no-files-found: ignore
+
+  # The demo image (Dockerfile): built with a layer cache in GitHub Actions' cache, checked for size,
+  # smoke-tested with no network and a dummy key, and its sandbox tests run as root inside it.
+  # Runs when something that goes into the image changed, on workflow_dispatch, and on a new branch.
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - id: changed
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          build=false
+          if [ "$EVENT" = workflow_dispatch ] || [ -z "$BASE_SHA" ] \
+              || [ "$BASE_SHA" = 0000000000000000000000000000000000000000 ] \
+              || ! git cat-file -e "$BASE_SHA" 2>/dev/null; then
+            build=true
+          else
+            for f in $(git diff --name-only "$BASE_SHA" HEAD); do
+              case "$f" in
+                Dockerfile|.dockerignore|docker/*|src/*|assumptions/*|budgets.yaml|pyproject.toml|requirements.txt|requirements-demo.txt|ci/bicycle-Cargo.lock|scripts/smoke_image.py|.github/workflows/ci.yml)
+                  build=true ;;
+              esac
+            done
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "image build: $build"
+
+      - if: steps.changed.outputs.build == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the image
+        if: steps.changed.outputs.build == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: qre-demo:ci
+          build-args: GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=image
+          cache-to: type=gha,scope=image,mode=max
+
+      - name: Image size (at most 1.2 GB)
+        if: steps.changed.outputs.build == 'true'
+        run: |
+          size=$(docker image inspect qre-demo:ci --format '{{.Size}}')
+          echo "image size: $size bytes"
+          echo "image size: $(( size / 1000000 )) MB (limit 1200 MB)" >> "$GITHUB_STEP_SUMMARY"
+          docker history --no-trunc --format '{{.Size}}\t{{.CreatedBy}}' qre-demo:ci | cut -c1-150 | head -20
+          [ "$size" -le 1200000000 ]
+
+      - name: Smoke test (no network, dummy key)
+        if: steps.changed.outputs.build == 'true'
+        run: python scripts/smoke_image.py qre-demo:ci --lock ci/bicycle-Cargo.lock | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Build the test image
+        if: steps.changed.outputs.build == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: test
+          load: true
+          tags: qre-demo:test
+          build-args: GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=image
+          cache-to: type=gha,scope=image,mode=max
+
+      # As root, the sandbox tests start a broker as the image's `sandbox` user; as `app`, the rest.
+      # QRE_REQUIRE_ROOT_TESTS=1 makes a skip a failure. The image's own broker settings are cleared:
+      # the tests start their own.
+      - name: Sandbox tests inside the image
+        if: steps.changed.outputs.build == 'true'
+        run: |
+          run() { docker run --rm --network none -e QRE_SANDBOX_SOCKET= -e QRE_SANDBOX_REQUIRED= "$@" \
+            qre-demo:test python -m pytest -q -rs -p no:cacheprovider tests/test_sandbox_broker.py tests/test_sandbox_limits.py; }
+          run --user root -e QRE_REQUIRE_ROOT_TESTS=1 -e QRE_TEST_SANDBOX_USER=sandbox
+          run --user app

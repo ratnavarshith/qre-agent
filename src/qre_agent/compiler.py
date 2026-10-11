@@ -96,6 +96,8 @@ def compiler_versions(a):
     if commit:
         dirty = _git(root, "status", "--porcelain", "--untracked-files=no")
         versions["bicycle_compiler_commit"] = commit + ("-dirty" if dirty else "")
+    elif (root / "COMMIT").is_file():  # a build without a checkout (the Docker image) says it here
+        versions["bicycle_compiler_commit"] = (root / "COMMIT").read_text(encoding="utf-8").strip()
     lock = root / "Cargo.lock"
     if lock.is_file():
         packages = tomllib.loads(lock.read_text(encoding="utf-8"))["package"]
