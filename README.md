@@ -16,7 +16,7 @@ Physical qubit-seconds at p = 1e-3, surface ÷ two-gross (above 1 means bicycle 
 | Grover (n = 4 to 64) | Toffoli only | 0.74 to 0.97x |
 | adder (n = 4 to 64) | Toffoli only | 0.45 to 0.65x |
 
-Bicycle uses far fewer qubits but runs much longer. At p = 1e-4 the surface code wins everywhere, but that comparison is mostly about factory choice (see Limitations).
+Bicycle uses far fewer qubits but runs much longer. At p = 1e-4 the surface code beats two-gross at every size, and the plain gross code only wins on QFT with n = 4 (the other sizes it fails the error budget or loses). That comparison is mostly about factory choice (see Limitations).
 
 ### Phase 2: which model runs the agent
 
