@@ -44,9 +44,11 @@ def load_keys():
 
 
 def api_key(name):
-    """The key from .env, after checking its prefix. Errors name the variable, never the value."""
+    """The key from .env, without surrounding whitespace (a pasted secret often ends in a newline,
+    which would break the Authorization header), after checking its prefix. Errors name the
+    variable, never the value."""
     load_keys()
-    key = os.environ.get(name, "")
+    key = os.environ.get(name, "").strip()
     if not key.startswith(KEY_PREFIXES[name]):
         raise RuntimeError(
             f"{name} is missing or malformed: it must start with {KEY_PREFIXES[name]!r} (check .env)"

@@ -183,6 +183,19 @@ def test_well_formed_keys_are_returned(monkeypatch):
     assert api_key("ANTHROPIC_API_KEY") == "sk-ant-api03-0123456789"
 
 
+@pytest.mark.parametrize(
+    "padded", ["sk-or-v1-0123456789\n", "sk-or-v1-0123456789\r\n", " sk-or-v1-0123456789\t"]
+)
+def test_a_key_with_surrounding_whitespace_is_returned_without_it(monkeypatch, padded):
+    """A secret pasted with a trailing newline (PowerShell adds CRLF) would put a newline in the
+    Authorization header and break every call."""
+    from qre_agent.spend import api_key
+
+    monkeypatch.setattr("qre_agent.spend.load_keys", lambda: None)
+    monkeypatch.setenv("OPENROUTER_API_KEY", padded)
+    assert api_key("OPENROUTER_API_KEY") == "sk-or-v1-0123456789"
+
+
 def test_cache_writes_are_billed_at_the_cache_write_price():
     price = {"input": 1.0, "cache_read": 0.1, "cache_write": 1.25, "output": 2.0}
     # 600 fresh * 1.0 + 200 cached * 0.1 + 200 written * 1.25 + 500 out * 2.0, per 1M
