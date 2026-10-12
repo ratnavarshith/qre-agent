@@ -57,11 +57,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # The CI `image` job's layer cache, so a master commit that CI built is mostly cached here.
       - name: Build the image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           load: true

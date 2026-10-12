@@ -17,7 +17,7 @@ docker run --rm -p 8080:8080 --tmpfs /sandbox-tmp:size=64m -e OPENROUTER_API_KEY
 | `final` | `python:3.11.17-slim-bookworm` plus the above, `src/`, `assumptions/`, `budgets.yaml` | no Rust, git, `.env` or key. The code runs from `/app/src`, so the repository root is `/app` and the tables sit in `/app/cache/` where the code looks |
 | `test` | `final` plus pytest and `tests/` | only for CI (`--target test`) |
 
-Base images are pinned by digest as well as tag (looked up 2026-10-11). The tables are not reproducible: the compiler breaks cost ties in `HashMap` order, so each build makes tables that differ a little (bicycle timesteps by about 1%). The tables of an image are fixed by its layer cache and their sha256s are in `/app/cache/tables.sha256`, in `/health` (`measurement_tables`) and in every result.
+Base images are pinned by digest as well as tag (looked up 2026-10-11). The tables are not reproducible: the compiler breaks cost ties in `HashMap` order, so each build makes tables that differ a little (bicycle timesteps by about 1%). Upstream [PR #28](https://github.com/qiskit-community/bicycle-architecture-compiler/pull/28) makes the generation deterministic; it's open, not merged. The tables of an image are fixed by its layer cache and their sha256s are in `/app/cache/tables.sha256`, in `/health` (`measurement_tables`) and in every result. The deployed image's tables are not the ones CI's builds reported (docs/deploy.md).
 
 ## Processes and users
 
