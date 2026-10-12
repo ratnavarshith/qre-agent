@@ -112,7 +112,11 @@ def main(checks=CHECKS):
         print(f"{'ok  ' if ok else 'FAIL'} {name}: {detail}", flush=True)
         if not ok:
             failed.append(name)
-    print(f"memory: now {cgroup('memory.current')} MB, peak {cgroup('memory.peak')} MB (cgroup)")
+    now, peak = cgroup("memory.current"), cgroup("memory.peak")
+    if now is None and peak is None:  # Cloud Run doesn't expose them inside the container
+        print("memory: not available (no cgroup memory files)")
+    else:
+        print(f"memory: now {now} MB, peak {peak} MB (cgroup)")
     if failed:
         print(f"selfcheck FAILED: {', '.join(failed)}")
         return 1

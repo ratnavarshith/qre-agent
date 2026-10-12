@@ -60,7 +60,7 @@ Two sharp edges: after Cancel the Run button comes back at once, but the server 
 | per day | stop accepting at $0.75 `usage_daily` on the key |
 | key | stop for good below $0.40 left |
 
-The daily cap and the stop level come from `GET https://openrouter.ai/api/v1/key` (`limit_remaining`, `effective_budget.remaining_usd`, `usage_daily`), asked at most once every 30 s, so they survive a restart and count what other uses of the key spent. Runs already going can pass the daily cap; the per-run cap bounds that. `GET /limits` returns `accepting_runs`, the `reason` if not, and this address's `runs_left`. `GET /healthz` returns the versions and `accepting_runs` without any outside call. `GET /` is the page (below). There is no docs page.
+The daily cap and the stop level come from `GET https://openrouter.ai/api/v1/key` (`limit_remaining`, `effective_budget.remaining_usd`, `usage_daily`), asked at most once every 30 s, so they survive a restart and count what other uses of the key spent. Runs already going can pass the daily cap; the per-run cap bounds that. `GET /limits` returns `accepting_runs`, the `reason` if not, and this address's `runs_left`. `GET /health` (or HEAD) returns the versions, the table hashes and `accepting_runs` without any outside call. `/healthz` answers the same, but Cloud Run reserves some paths ending in `z`, so it only works inside the container; use `/health` from outside. `GET /` is the page (below). There is no docs page.
 
 ## A client that leaves
 

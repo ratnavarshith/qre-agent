@@ -81,3 +81,11 @@ def test_the_user_check_compares_the_uid_the_code_saw(monkeypatch):
     assert selfcheck.check_user()[0] is False
     monkeypatch.setattr(selfcheck, "run_circuit_code", fake(SandboxError("broker unavailable")))
     assert selfcheck.check_user()[0] is False
+
+
+def test_memory_the_platform_does_not_expose_is_reported_as_not_available(monkeypatch, capsys):
+    """Cloud Run has no cgroup memory files inside the container; the line said `None MB`."""
+    monkeypatch.setattr(selfcheck, "cgroup", lambda name: None)
+    selfcheck.main([("good", lambda: (True, "fine"))])
+    out = capsys.readouterr().out
+    assert "memory: not available (no cgroup memory files)" in out and "None MB" not in out

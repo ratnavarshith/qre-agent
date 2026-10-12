@@ -4,7 +4,7 @@ the host will use it. No LLM call is made (there is no network, and the key is n
     python scripts/smoke_image.py IMAGE [--commit SHA] [--lock ci/bicycle-Cargo.lock]
 
 Checks: GET / loads the page (with its policy and no outside URL) and /limits fails closed with no
-network; /healthz (versions, the compiler's commit and Cargo.lock hash, the measurement tables'
+network; HEAD / and HEAD /health answer 200; /health (versions, the compiler's commit and Cargo.lock hash, the measurement tables'
 hashes against the ones recorded in the image); the server and the broker run as different
 non-root users; a build_circuit call goes through the broker and runs as the sandbox user, with
 none of the server's environment; the sandbox user can't read the server's /proc/<pid>/environ;
@@ -26,7 +26,7 @@ KEY = "sk-or-v1-" + "0" * 64  # not a real key
 APP_UID, SANDBOX_UID = "10001", "10002"
 SURFACE_QUBITS, BICYCLE_QUBITS = 140015, 1226  # 4-qubit QFT at p = 1e-3 (results/comparison)
 
-HEALTH = "import urllib.request as u; print(u.urlopen('http://127.0.0.1:8080/healthz', timeout=5).read().decode())"
+HEALTH = "import urllib.request as u; print(u.urlopen('http://127.0.0.1:8080/health', timeout=5).read().decode())"
 PROCESSES = """
 import json, os
 found = {}
@@ -82,11 +82,12 @@ import json, re, urllib.request as u
 r = u.urlopen('http://127.0.0.1:8080/', timeout=5)
 body = r.read().decode()
 limits = json.loads(u.urlopen('http://127.0.0.1:8080/limits', timeout=30).read().decode())
+heads = {p: u.urlopen(u.Request('http://127.0.0.1:8080' + p, method='HEAD'), timeout=5).status for p in ('/', '/health')}
 print(json.dumps({
     'status': r.status, 'type': r.headers['content-type'],
     'csp': r.headers.get('content-security-policy', ''), 'title': '<title>' in body,
     'calls': '/estimate' in body and '/limits' in body,
-    'urls': sorted(set(re.findall(r'https?://[A-Za-z0-9./_-]+', body))), 'limits': limits,
+    'urls': sorted(set(re.findall(r'https?://[A-Za-z0-9./_-]+', body))), 'limits': limits, 'heads': heads,
 }))
 """
 READ_ENVIRON = "import sys; open('/proc/' + sys.argv[1] + '/environ').read()"
@@ -148,7 +149,7 @@ class Smoke:
     def test_health(self, health):
         v = health.get("versions", {})
         self.check(
-            "healthz is ok and accepting runs", health.get("ok") and health.get("accepting_runs")
+            "/health is ok and accepting runs", health.get("ok") and health.get("accepting_runs")
         )
         self.check(
             "versions: qdk, qiskit, compiler",
@@ -193,6 +194,11 @@ class Smoke:
             "the page names no URL but the repository",
             got.get("urls") == ["https://github.com/ratnavarshith/qre-agent"],
             str(got.get("urls")),
+        )
+        self.check(
+            "HEAD / and HEAD /health answer 200",
+            got.get("heads") == {"/": 200, "/health": 200},
+            str(got.get("heads")),
         )
         # no network: the demo can't read its key's budget, so it must say it isn't accepting runs
         limits = got.get("limits", {})

@@ -214,3 +214,12 @@ def test_real_estimates_have_the_fields_of_a_table_row():
             assert key in row, (row["architecture"], key)
         assert {"error_budget", "physical_error_rate"} <= set(row["assumptions"])
     assert rows[1]["code"] == "gross"
+
+
+def test_the_root_answers_head_with_the_same_headers_and_no_body():
+    """Uptime monitors and `curl -I` send HEAD; it got 405 on the live service."""
+    client = TestClient(create_app(FakeDemo(), open_budget()))
+    get, head = client.get("/"), client.head("/")
+    assert head.status_code == 200 and head.content == b""
+    for name in ("content-type", "content-security-policy", "x-content-type-options"):
+        assert head.headers[name] == get.headers[name], name

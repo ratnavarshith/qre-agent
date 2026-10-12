@@ -454,3 +454,19 @@ def test_a_real_run_end_to_end_with_a_scripted_llm_and_the_real_estimators(tmp_p
     # the same task again hits the estimate cache for both estimates
     demo.clients = (Scripted(), Scripted())
     assert events(post(client, "4-qubit QFT"))[-1]["routing"]["cache_hits"] == 2
+
+
+def test_health_answers_get_and_head_on_both_paths(make):
+    """Cloud Run reserves some paths ending in z, so /healthz never reaches the container there:
+    /health is the public path. /healthz stays for use inside the container."""
+    client, _ = make(versions={"versions": {"qdk": "1.0"}, "measurement_tables": {"gross": "abc"}})
+    want = {
+        "ok": True,
+        "accepting_runs": True,
+        "versions": {"qdk": "1.0"},
+        "measurement_tables": {"gross": "abc"},
+    }
+    for path in ("/health", "/healthz"):
+        assert client.get(path).json() == want, path
+        head = client.head(path)
+        assert head.status_code == 200 and head.content == b"", path

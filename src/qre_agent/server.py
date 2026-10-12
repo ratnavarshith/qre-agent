@@ -165,7 +165,8 @@ def create_app(demo, budget, limiter=None, slots=None, hops=1, versions=None):
 
     page, page_headers = load_page()
 
-    @app.get("/", include_in_schema=False)
+    # HEAD too, for `curl -I` and uptime monitors: the server sends the headers, not the body.
+    @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
     async def index():  # no budget check, no limit: it is a static file
         return HTMLResponse(page, headers=page_headers)
 
@@ -202,8 +203,11 @@ def create_app(demo, budget, limiter=None, slots=None, hops=1, versions=None):
         left = limiter.remaining(address(request))
         return {"accepting_runs": reason is None, "reason": reason, "runs_left": left}
 
-    @app.get("/healthz")
-    async def healthz():  # no LLM call, no key check
+    # /health is the public path: Cloud Run reserves some paths ending in `z`, so /healthz never
+    # reaches the container there (docs/deploy.md). /healthz stays for use inside the container.
+    @app.api_route("/health", methods=["GET", "HEAD"])
+    @app.api_route("/healthz", methods=["GET", "HEAD"])
+    async def health():  # no LLM call, no key check
         return {"ok": True, "accepting_runs": not budget.exhausted} | (versions or {})
 
     return app
