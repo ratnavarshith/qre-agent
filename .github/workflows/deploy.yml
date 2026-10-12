@@ -1,0 +1,114 @@
+name: Deploy
+
+# Builds the demo image, checks it, pushes it to Artifact Registry tagged with the commit, and, with
+# `deploy: true`, points the Cloud Run service at it by digest. Run by hand only, from master, in
+# the `demo` environment (which needs a reviewer's approval). Google credentials come from Workload
+# Identity Federation: GitHub's OIDC token is exchanged for a short-lived token of the deploy service
+# account, and Google only accepts tokens from this repository's master branch in the `demo`
+# environment. No key file exists anywhere. One-time setup and the first deploy: docs/deploy.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Also deploy the image to Cloud Run (off: build, check and push only)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write  # for the OIDC token Workload Identity Federation exchanges
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  # Repository variables (Settings > Secrets and variables > Actions > Variables); none is secret.
+  PROJECT: ${{ vars.GCP_PROJECT }}
+  REGION: ${{ vars.GCP_REGION }}
+  WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+  DEPLOY_SA: ${{ vars.GCP_DEPLOY_SA }}
+  SERVICE: qre-demo
+  QDK_PYTHON_TELEMETRY: none
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: demo
+    steps:
+      - name: From master only
+        if: github.ref != 'refs/heads/master'
+        run: |
+          echo "::error::deploys run from master only, not $GITHUB_REF"
+          exit 1
+
+      - name: Check the repository variables
+        run: |
+          for v in PROJECT REGION WIF_PROVIDER DEPLOY_SA; do
+            [ -n "${!v}" ] || { echo "::error::repository variable for $v is not set (see docs/deploy.md)"; exit 1; }
+          done
+          echo "IMAGE=$REGION-docker.pkg.dev/$PROJECT/qre-demo/qre-demo" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - uses: docker/setup-buildx-action@v3
+
+      # The CI `image` job's layer cache, so a master commit that CI built is mostly cached here.
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: qre-demo:candidate
+          build-args: GIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=image
+
+      - name: Smoke test (no network, dummy key)
+        run: |
+          set -o pipefail
+          python scripts/smoke_image.py qre-demo:candidate | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Sandbox self-check
+        run: docker run --rm --network none --memory 2g --tmpfs /sandbox-tmp:size=64m qre-demo:candidate selfcheck
+
+      - uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.PROJECT }}
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: Push, tagged with the commit
+        id: push
+        run: |
+          gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+          docker tag qre-demo:candidate "$IMAGE:$GITHUB_SHA"
+          docker push "$IMAGE:$GITHUB_SHA"
+          digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$GITHUB_SHA")
+          digest=${digest#*@}
+          [[ "$digest" == sha256:* ]] || { echo "::error::no digest for the pushed image"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Pushed"
+            echo "- image: \`$IMAGE:$GITHUB_SHA\`"
+            echo "- digest: \`$digest\`"
+            echo "- size: $(( $(docker image inspect qre-demo:candidate --format '{{.Size}}') / 1000000 )) MB uncompressed"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Only the image changes; every other setting stays as the first deploy set it (docs/deploy.md).
+      - name: Deploy to Cloud Run
+        if: inputs.deploy
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          gcloud run deploy "$SERVICE" --region="$REGION" --image="$IMAGE@$DIGEST" --quiet
+          revision=$(gcloud run services describe "$SERVICE" --region="$REGION" --format='value(status.latestReadyRevisionName)')
+          url=$(gcloud run services describe "$SERVICE" --region="$REGION" --format='value(status.url)')
+          echo "### Deployed revision \`$revision\` at $url" >> "$GITHUB_STEP_SUMMARY"

@@ -36,7 +36,11 @@ for _ in $(seq 1 150); do  # up to 15 s for the socket
 done
 [ -S "$SOCKET" ] || { echo "entrypoint: no sandbox socket at $SOCKET" >&2; kill "$broker"; exit 1; }
 
-HOME=/home/app "${as_app[@]}" python -m qre_agent.server &
+# `qre-entrypoint selfcheck` runs the sandbox's self-check (qre_agent/selfcheck.py) instead of the
+# server, with the broker started exactly as it is for the server.
+program=qre_agent.server
+[ "${1:-}" = selfcheck ] && program=qre_agent.selfcheck
+HOME=/home/app "${as_app[@]}" python -m "$program" &
 server=$!
 
 trap 'kill -TERM "$server" "$broker" 2>/dev/null || true' TERM INT

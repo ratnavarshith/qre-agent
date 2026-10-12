@@ -287,6 +287,12 @@ jobs:
           set -o pipefail
           python scripts/smoke_image.py qre-demo:ci --lock ci/bicycle-Cargo.lock | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # The same self-check the deploy runs on Cloud Run (docs/deploy.md): the image's own
+      # entrypoint starts the broker, then the checks run as `app` against the real limits.
+      - name: Sandbox self-check (as on Cloud Run)
+        if: steps.changed.outputs.build == 'true'
+        run: docker run --rm --network none --memory 2g --tmpfs /sandbox-tmp:size=64m qre-demo:ci selfcheck
+
       - name: Build the test image
         if: steps.changed.outputs.build == 'true'
         uses: docker/build-push-action@v6
