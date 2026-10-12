@@ -152,14 +152,38 @@ class Smoke:
         current, peak = self.cgroup("memory.current"), self.cgroup("memory.peak")
         self.memory.append((when, current, peak))
 
-    def start(self):
+    def run_container(self, name):
         r = docker(
-            "run", "-d", "--name", self.name, "--network", "none", "--memory", "2g",
+            "run", "-d", "--name", name, "--network", "none", "--memory", "2g",
             "--memory-swap", "2g", "--tmpfs", "/sandbox-tmp:size=64m",
             "-e", f"OPENROUTER_API_KEY={KEY}", self.image,
         )  # fmt: skip
         if r.returncode:
             sys.exit(f"docker run failed: {r.stderr}")
+
+    def measure_starts(self, n):
+        """Start the image n more times, each in a fresh container, and report the spread of
+        start to first response and start to ready (startup times vary from start to start)."""
+        times = []
+        for i in range(n):
+            name = f"{self.name}-start{i}"
+            self.run_container(name)
+            r = docker("exec", "--user", "app", name, "python", "-c", STARTUP)
+            docker("rm", "-f", name)
+            if r.returncode == 0 and r.stdout.strip():
+                times.append(json.loads(r.stdout))
+        for key, label in (
+            ("first_response_s", "first response (GET /)"),
+            ("ready_s", "ready (/health with versions)"),
+        ):
+            values = sorted(t[key] for t in times if t.get(key) is not None)
+            if values:
+                print(f"start to {label} over {len(values)} starts: median {values[len(values) // 2]} s, "
+                      f"min {values[0]} s, max {values[-1]} s, all {values}")  # fmt: skip
+        self.check(f"{n} more starts were timed", len(times) == n, f"{len(times)} of {n}")
+
+    def start(self):
+        self.run_container(self.name)
         code, out, err = self.run_python(STARTUP)
         times = json.loads(out) if code == 0 and out else {}
         self.first_response_s, self.ready_s = times.get("first_response_s"), times.get("ready_s")
@@ -343,6 +367,7 @@ def main():
     parser.add_argument("image")
     parser.add_argument("--commit", default="bed7e8aba4cc0fb86311b7fa6dad6217c0fce7cb")
     parser.add_argument("--lock", default="ci/bicycle-Cargo.lock")
+    parser.add_argument("--starts", type=int, default=5, help="extra starts to time (0: none)")
     args = parser.parse_args()
     smoke = Smoke(args.image, args.commit, args.lock)
     try:
@@ -351,6 +376,8 @@ def main():
             f"start to first response (GET /): {smoke.first_response_s} s; "
             f"start to ready (/health with versions): {smoke.ready_s} s"
         )
+        if args.starts:
+            smoke.measure_starts(args.starts)
         time.sleep(3)
         smoke.note_memory("idle, ready")
         smoke.test_health(health)
