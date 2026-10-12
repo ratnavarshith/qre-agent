@@ -163,7 +163,7 @@ I ran four models on 40 tasks, 3 passes each (25 standard, 10 free-form where th
 
 - **Sonnet is about 15 points ahead** of the others (97% against 81 to 84%), at 1.6 to 10x the cost per run. All models get the standard tasks right (93 to 100%); the gap is in free-form circuits (87% against 43 to 60%).
 - **The three cheaper models are within noise of each other under v2** (81 to 84%, spreads of 1 to 6 points). Under v1, DeepSeek is 10 points above Haiku, so that ordering depends on the grader.
-- **Verify passes more often than answers are correct.** 53 runs passed `verify` and were still wrong (Gemini 16, Haiku 23, DeepSeek 14), because it checks the answer against the tool outputs, not that the circuit or settings were the right ones. So passing `verify` alone is not enough to decide when to escalate to a stronger model.
+- **Verify passes more often than answers are correct.** 57 of 480 runs passed `verify` and were still wrong (Gemini 16, Haiku 23, DeepSeek 14, Sonnet 4), because it checks the answer against the tool outputs, not that the circuit or settings were the right ones. So passing `verify` alone is not enough to decide when to escalate to a stronger model.
 - **The eval found three bugs, now fixed.** Gemini rejects numeric enums in tool schemas and called `estimate_bicycle` with no arguments, so the schemas use string enums. `build_circuit` sent code to the sandbox in the Windows code page, so a π in the code crashed it (27 runs rerun after the fix). Rotations at ±π/2 made `estimate_surface` raise on ordinary circuits (rxx, ryy, controlled phases at π, the 4-bit Draper adder); `prepare()` now turns them into Clifford gates.
 
 Limitations:
