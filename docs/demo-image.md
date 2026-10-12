@@ -46,6 +46,7 @@ The smoke test starts the image with `--network none`, `--memory 2g` and a dummy
 | memory at idle | **208 MB** (cgroup `memory.current`; peak since start 220 MB); the server has imported qiskit and QDK and hashed the tables |
 | memory after a build through the broker | 208 MB, peak 361 MB |
 | memory after one real estimate on both architectures | 208 MB, **peak 962 MB** (an estimate's child process and the bicycle compiler's table load; I did not separate the two) |
-| start to ready | 3 s |
+| start to first response (GET /), in the container | **1.09 s** median over 5 starts (1.05 to 1.10 s); 2.51 s (2.46 to 2.57 s) before the estimators moved to a background load. Timed by the smoke test from the entrypoint's start, inside the container, on the CI runner |
+| start to ready (`/health` has the versions) | 1.87 s median (1.84 to 1.90 s); 2.52 s before. Ready comes sooner too: the broker no longer imports qiskit before it listens, so the server starts earlier |
 
 These are one run each, so no spread. The peak of 962 MB is one estimate at a time (the server runs them one at a time); two sandbox builds that each use their whole allowance (about 600 MB each) together with the server (about 210 MB) and an estimate (up to 960 MB) would pass 2 GiB, so the 2 GiB instance is tight in that worst case; the in-memory temp volume also counts against it. Nothing here measured that case. The plan estimated 0.7 to 0.75 GB for the image and 1.2 to 1.3 GB at peak.

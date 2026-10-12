@@ -229,7 +229,7 @@ Do these before sharing the URL. Checks 1 to 3 cost nothing. Checks 4 and 5 make
    - deploy a revision with no traffic: `gcloud run deploy qre-demo --region=$REGION --image=<same digest> --set-secrets=OPENROUTER_API_KEY=qre-demo-openrouter-key:<new version> --no-traffic --tag=oocheck`;
    - on its tag URL (printed by the deploy, `https://oocheck---qre-demo-…`), `/limits` should say `budget_exhausted` and `POST /estimate` should get 503;
    - then undo all of it, or the next deploy uses a dead key and gets no traffic: `gcloud run services update-traffic qre-demo --region=$REGION --remove-tags=oocheck`, `gcloud run services update qre-demo --region=$REGION --set-secrets=OPENROUTER_API_KEY=qre-demo-openrouter-key:2`, `gcloud run services update-traffic qre-demo --region=$REGION --to-latest`, disable the new secret version, and delete the $0 key on OpenRouter.
-7. **Cold start.** Leave it idle for 20 minutes, then time the first request: `curl -s -o /dev/null -w "%{http_code} in %{time_total} s\n" "$URL/"`. In CI the container was ready in 3 s; on gen2 with a 332 MB image pull it will be longer. Record the number.
+7. **Cold start.** Leave it idle for 20 minutes, then time the first request: `curl -s -o /dev/null -w "%{http_code} in %{time_total} s\n" "$URL/"`. Inside the container the server first answers in about 1.1 s on the CI runner (docs/demo-image.md); the rest of a cold start is Cloud Run starting an instance and pulling the 332 MB image. Record the number.
 
 ## First deploy: what happened
 
@@ -243,7 +243,7 @@ Deployed 2026-10-12 as revision `qre-demo-00001-d49`, image `sha256:aa85552a…`
 | 4. One real run | Passed: Gemini answered, verified, $0.0047 in 5 model calls and 18.8 s (16-qubit QFT at p = 1e-4: 136,285 surface and 1,601 gross physical qubits, matching local estimates). OpenRouter's usage figure was not compared |
 | 5. Client address | Passed: all three `/limits` calls showed the same runs left; forged headers are ignored, `QRE_PROXY_HOPS=1` is right |
 | 6. Out of credit | Skipped on purpose (unit tests cover it) |
-| 7. Cold start | Not measured yet |
+| 7. Cold start | 21 s for the first GET / after idling (warm: 0.13 s), measured before the server answered ahead of loading the estimators. In the container the first answer then took 2.5 s on the CI runner (more on Cloud Run's 1 vCPU) and now takes 1.1 s; the cold start on Cloud Run is to be measured again after the next deploy |
 
 What went wrong on the way, and is now in the steps above: the secret's first version (a pasted block fed `read`), and the deploy's `mount-path` (Git Bash path rewriting).
 
