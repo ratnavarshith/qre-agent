@@ -10,6 +10,7 @@ shared between the two but the socket. Start it (as that user, with an empty env
 and give the server QRE_SANDBOX_SOCKET=/run/qre/sandbox.sock. See docs/agent-design.md."""
 
 import base64
+import importlib
 import json
 import logging
 import os
@@ -19,7 +20,7 @@ import sys
 import threading
 import time
 
-from .tools import MAX_QPY_BYTES, SOCKET_ENV, TIMEOUT_S, SandboxError, build_qpy, check_size
+from .sandbox_common import MAX_QPY_BYTES, SOCKET_ENV, TIMEOUT_S, SandboxError
 
 log = logging.getLogger("qre_agent.sandbox")
 MAX_REQUEST = 256 * 1024  # bytes: the code is at most a few KB
@@ -27,6 +28,14 @@ MAX_REPLY = 2 * MAX_QPY_BYTES  # bytes: a QPY file of at most MAX_QPY_BYTES, as 
 MAX_BUSY = 2  # builds at once, as many as the server's run slots: 2 x 512 MB at worst
 READ_S = 10  # a client has this long to send its request: a silent one must not hold a place
 NPROC = 32  # processes and threads of the sandbox user: 2 builds at one or two threads each
+
+
+def build_qpy(code, timeout, limits=None):
+    """tools.build_qpy, imported on first use: it pulls in qiskit, which the server's startup check
+    (`check`, `describe`) doesn't need."""
+    from .tools import build_qpy as build
+
+    return build(code, timeout, limits=limits)
 
 
 def send(conn, message):
@@ -99,6 +108,8 @@ def exchange(conn, code, timeout):
     if not reply.get("ok"):
         raise SandboxError(str(reply.get("error", "the sandbox broker failed")))
     text = reply["qpy"]
+    from .tools import check_size
+
     check_size(len(text) // 4 * 3 - text.count("=", -2))  # the decoded size, before decoding
     return base64.b64decode(reply["qpy"])
 
@@ -195,6 +206,10 @@ def serve(path, build=build_with_nproc):
     server.listen(8)
     busy = threading.BoundedSemaphore(MAX_BUSY)
     log.info("sandbox broker listening on %s as uid %d", path, os.geteuid())
+    # Listening comes first, so the server can start; qiskit is imported for builds meanwhile.
+    threading.Thread(
+        target=importlib.import_module, args=(f"{__package__}.tools",), daemon=True
+    ).start()
     while True:
         admit(server.accept()[0], build, busy)
 

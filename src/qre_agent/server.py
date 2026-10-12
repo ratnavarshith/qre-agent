@@ -1,6 +1,8 @@
 """The demo's HTTP API: POST /estimate runs the agent and streams newline-delimited JSON events
 (accepted, step, escalated, ping, then one result or error). Limits are in limits.py, a run in
-demo.py. See docs/demo-api.md."""
+demo.py. This module doesn't import qiskit, QDK or the estimators: they load in the background
+after startup (Startup), so the page, /health and /limits answer while they do. See
+docs/demo-api.md."""
 
 import asyncio
 import base64
@@ -12,6 +14,7 @@ import os
 import re
 import secrets
 import threading
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -19,15 +22,16 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from . import limits, sandbox_broker
-from .demo import Cancelled, Demo, Hooks, new_run_id, versions_of
 from .limits import IpLimiter, KeyBudget, Rejected, client_ip
-from .tools import SOCKET_ENV
+from .run_control import Cancelled, Hooks, new_run_id
+from .sandbox_common import SOCKET_ENV
 
 log = logging.getLogger("qre_agent.demo")
 MAX_BODY = 8192
 MAX_PROBLEM = 1500
 PING_S = 10
 SALT = secrets.token_hex(8)  # per process: the logs can tell addresses apart, not name them
+LOAD_WAIT_S = 60  # how long a run waits for the estimators to finish loading after a cold start
 
 
 PAGE = Path(__file__).with_name("static") / "index.html"
@@ -151,10 +155,60 @@ def work(demo, budget, problem, run_id, hooks, record):
     hooks.emit(event)
 
 
-def create_app(demo, budget, limiter=None, slots=None, hops=1, versions=None):
-    """`demo` runs a task (demo.Demo); `budget` is a limits.KeyBudget. `hops`: how many entries
-    from the right of X-Forwarded-For are our own proxies' (see docs/demo-api.md)."""
+def _exit_on_failed_load():
+    """A server that can't load its estimators can't run anything: exit, as a failed startup did
+    before loading moved to the background, so the host restarts the container."""
+    logging.shutdown()
+    os._exit(1)
+
+
+class Startup:
+    """The demo and its versions. Given (tests) they are ready at once. Given as `load`, a function
+    returning (demo, versions), they are built in a background thread, so the server answers the
+    page, /health and /limits while qiskit, QDK and the estimators import and the measurement
+    tables are hashed. A run waits for them (`wait`). If `load` fails, `on_error` is called."""
+
+    def __init__(self, demo=None, versions=None, load=None, on_error=_exit_on_failed_load):
+        self.demo, self.versions, self.error, self.on_error = demo, versions or {}, None, on_error
+        self.done = threading.Event()
+        if load is None:
+            self.done.set()
+        else:
+            threading.Thread(target=self._load, args=(load,), name="qre-load", daemon=True).start()
+
+    def _load(self, load):
+        start = time.monotonic()
+        try:
+            self.demo, self.versions = load()
+        except Exception as e:  # noqa: BLE001 (logged, then the process exits)
+            self.error = e
+            log.error("loading the estimators failed: %s: %s", type(e).__name__, e)
+            self.done.set()
+            self.on_error()
+            return
+        log.info("estimators loaded in %.1f s", time.monotonic() - start)
+        self.done.set()
+
+    @property
+    def ready(self):
+        return self.done.is_set() and self.error is None
+
+    async def wait(self, timeout=None):
+        """The demo, once loaded; Rejected(503, "starting") if it isn't within `timeout` seconds."""
+        if not self.done.is_set():
+            await asyncio.to_thread(self.done.wait, LOAD_WAIT_S if timeout is None else timeout)
+        if not self.ready:
+            message = "The demo is still starting; try again in a few seconds."
+            raise Rejected(503, "starting", message, 10)
+        return self.demo
+
+
+def create_app(demo, budget, limiter=None, slots=None, hops=1, versions=None, load=None):
+    """`demo` runs a task (demo.Demo); `budget` is a limits.KeyBudget. Instead of `demo` and
+    `versions`, `load` builds them in the background (Startup). `hops`: how many entries from the
+    right of X-Forwarded-For are our own proxies' (see docs/demo-api.md)."""
     limiter, slots = limiter or IpLimiter(), slots or Slots()
+    startup = load if isinstance(load, Startup) else Startup(demo, versions, load)
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.exception_handler(Rejected)
@@ -179,6 +233,7 @@ def create_app(demo, budget, limiter=None, slots=None, hops=1, versions=None):
         ip = address(request)
         problem = await read_problem(request)
         await asyncio.to_thread(budget.check)
+        demo = await startup.wait()  # only after a cold start, and before a place is taken
         if slots.full():
             raise Rejected(429, "busy", "The demo is busy; try again in a minute.", 30)
         lease = Lease(limiter, ip)
@@ -207,8 +262,9 @@ def create_app(demo, budget, limiter=None, slots=None, hops=1, versions=None):
     # reaches the container there (docs/deploy.md). /healthz stays for use inside the container.
     @app.api_route("/health", methods=["GET", "HEAD"])
     @app.api_route("/healthz", methods=["GET", "HEAD"])
-    async def health():  # no LLM call, no key check
-        return {"ok": True, "accepting_runs": not budget.exhausted} | (versions or {})
+    async def health():  # no LLM call, no key check; `ready`: the estimators have loaded
+        state = {"ok": True, "ready": startup.ready, "accepting_runs": not budget.exhausted}
+        return state | startup.versions
 
     return app
 
@@ -285,30 +341,39 @@ def check_sandbox(environ=os.environ, wait_s=10.0):
     (log.info if mode == "broker" else log.warning)(message)
 
 
-def build():
-    """(demo, budget, proxy hops) from the environment; RuntimeError, naming the variable, if the
-    OpenRouter key is missing. No Anthropic key is read: the Claude fallback is off."""
+def load_demo():
+    """(demo, versions): the part of startup that imports qiskit, QDK and the estimators, runs the
+    compiler for its version and hashes the measurement tables. Run in the background (Startup)."""
     from .assumptions import load_assumptions
     from .cache import EstimateCache
+    from .demo import Demo, versions_of
     from .llm import OpenRouter
-    from .spend import api_key
     from .tools import SCHEMAS
 
-    key = api_key("OPENROUTER_API_KEY")
-    check_sandbox()
     demo = Demo(
         OpenRouter(SCHEMAS),
         OpenRouter(SCHEMAS, cache=True),  # Anthropic prompt caching on the strong model
         versions_of(load_assumptions()),
         EstimateCache(Path(os.environ.get("QRE_CACHE_DIR", "/tmp/qre/estimates"))),
     )
+    return demo, demo.info
+
+
+def build():
+    """(budget, proxy hops) from the environment, with the startup checks that stay before the
+    server answers: RuntimeError, naming the variable, if the OpenRouter key is missing, and the
+    sandbox check (check_sandbox). No Anthropic key is read: the Claude fallback is off."""
+    from .spend import api_key
+
+    key = api_key("OPENROUTER_API_KEY")
+    check_sandbox()
     budget = KeyBudget(lambda: limits.fetch_key_info(key))
-    return demo, budget, int(os.environ.get("QRE_PROXY_HOPS", "1"))
+    return budget, int(os.environ.get("QRE_PROXY_HOPS", "1"))
 
 
 def create_default_app():
-    demo, budget, hops = build()
-    return create_app(demo, budget, hops=hops, versions=demo.info)
+    budget, hops = build()
+    return create_app(None, budget, hops=hops, load=load_demo)
 
 
 def main():

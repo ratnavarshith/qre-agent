@@ -20,6 +20,7 @@ from qiskit.circuit.library import get_standard_gate_name_mapping
 from . import bicycle, circuits, surface
 from .assumptions import load_assumptions
 from .cache import cache_key
+from .sandbox_common import MAX_QPY_BYTES, SOCKET_ENV, TIMEOUT_S, SandboxError
 from .sandbox_runner import LIMITS as RUNNER_LIMITS
 from .verify import verify
 
@@ -32,9 +33,6 @@ ENV_KEEP = ("PATH", "SYSTEMROOT", "TEMP", "TMP")  # nothing else, so no API keys
 ENV_SET = {  # fixed values: one thread per library, so the process limit counts few threads
     "OPENBLAS_NUM_THREADS": "1", "OMP_NUM_THREADS": "1", "RAYON_NUM_THREADS": "1",
 }  # fmt: skip
-SOCKET_ENV = "QRE_SANDBOX_SOCKET"  # the sandbox broker's socket, when build_circuit runs behind one
-TIMEOUT_S = 60
-MAX_QPY_BYTES = 2**20  # what a build may hand back; checked before qiskit parses it
 TOOL_TIMEOUT_S = 180  # an estimate; the slowest seen in the evals took under 1 s in-process
 RUNNER = Path(__file__).with_name("sandbox_runner.py")
 STANDARD_GATES = set(get_standard_gate_name_mapping())
@@ -43,10 +41,6 @@ DROP = (  # not needed by the agent: long, or provenance for the traces and the 
     "frontier",  # every point on surface's Pareto frontier
     "measurement_table_sha256",
 )
-
-
-class SandboxError(Exception):
-    pass
 
 
 class ToolTimeout(Exception):

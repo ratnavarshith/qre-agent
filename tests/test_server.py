@@ -187,6 +187,7 @@ def test_limits_and_healthz(make):
     }  # fmt: skip
     assert client.get("/healthz").json() == {
         "ok": True,
+        "ready": True,
         "accepting_runs": True,
         "versions": {"qdk": "1.0"},
     }
@@ -462,6 +463,7 @@ def test_health_answers_get_and_head_on_both_paths(make):
     client, _ = make(versions={"versions": {"qdk": "1.0"}, "measurement_tables": {"gross": "abc"}})
     want = {
         "ok": True,
+        "ready": True,
         "accepting_runs": True,
         "versions": {"qdk": "1.0"},
         "measurement_tables": {"gross": "abc"},

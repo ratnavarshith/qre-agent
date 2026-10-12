@@ -3,7 +3,6 @@ the full injection guardrail, a per-run dollar cap and estimates one at a time. 
 progress through `Hooks` and stops at the next LLM call or tool call after `Hooks.cancel` is set.
 See docs/demo-api.md."""
 
-import secrets
 import shutil
 import tempfile
 import threading
@@ -14,6 +13,7 @@ from .agent import MAX_STEPS, MAX_TOKENS, environment
 from .limits import RUN_CAP_USD
 from .reliability import Reliable
 from .routing import run_routed
+from .run_control import Cancelled, Hooks, new_run_id  # noqa: F401
 from .spend import BUDGETS_PATH, Guard
 from .tools import Toolbox
 
@@ -23,27 +23,6 @@ ESTIMATES = ("estimate_surface", "estimate_bicycle")
 ESTIMATE_LOCK = (
     threading.Lock()
 )  # an estimate needs up to ~0.9 GB (child + compiler): one at a time
-
-
-class Cancelled(Exception):
-    """The run was stopped from outside (timeout or the client left)."""
-
-
-class Hooks:
-    """`emit(event)` reports progress and may be called from the run's thread; `cancel` is a
-    threading.Event that another thread sets to stop the run."""
-
-    def __init__(self, emit, cancel=None):
-        self.emit, self.cancel, self.steps = emit, cancel or threading.Event(), 0
-
-    def check(self):
-        if self.cancel.is_set():
-            raise Cancelled
-
-    def sleep(self, seconds):
-        """A retry's wait, cut short by a cancel."""
-        if self.cancel.wait(seconds):
-            raise Cancelled
 
 
 class Checked:
@@ -190,7 +169,3 @@ class Demo:
             "latency_s": round(latency_s, 1),
             **self.info,
         }
-
-
-def new_run_id():
-    return "d-" + secrets.token_hex(4)
