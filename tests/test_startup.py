@@ -62,19 +62,54 @@ def test_the_page_health_and_limits_answer_while_loading_and_a_run_waits_for_it(
     )
 
 
-def test_a_run_that_waits_too_long_for_the_load_gets_a_starting_error_and_no_place(monkeypatch):
-    monkeypatch.setattr(server, "LOAD_WAIT_S", 0.1)
+def events(response):
+    return [json.loads(line) for line in response.text.splitlines()]
+
+
+def test_a_run_waits_for_the_load_inside_its_own_time_limit_with_pings(monkeypatch):
+    """No separate, shorter limit for the load: a run that arrives during it says it is loading,
+    keeps the connection alive, and runs once the load is done."""
+    monkeypatch.setattr(server, "PING_S", 0.05)
+    load, started, release = blocked_load()
+    client = TestClient(create_app(None, open_budget(), load=load))
+    assert started.wait(5)
+    threading.Timer(0.4, release.set).start()
+    got = events(client.post("/estimate", json={"problem": "p"}))
+    kinds = [e["event"] for e in got]
+    assert kinds[:2] == ["accepted", "loading"] and "ping" in kinds and got[-1] == RESULT
+
+
+def test_a_load_slower_than_the_run_limit_ends_in_starting_and_frees_the_places(monkeypatch):
+    monkeypatch.setattr(server.limits, "RUN_S", 0.3)
     load, _, release = blocked_load()
-    limiter = server.IpLimiter()
-    client = TestClient(create_app(None, open_budget(), limiter=limiter, load=load))
-    r = client.post("/estimate", json={"problem": "p"})
-    assert (r.status_code, r.json()["error"]["code"]) == (503, "starting")
-    assert r.headers["retry-after"] == "10"
-    assert limiter.remaining("testclient") == {"hour": 4, "day": 10}  # it didn't count
+    limiter, slots = server.IpLimiter(), server.Slots()
+    client = TestClient(create_app(None, open_budget(), limiter=limiter, slots=slots, load=load))
+    got = events(client.post("/estimate", json={"problem": "p"}))
+    assert [e["event"] for e in got][:2] == ["accepted", "loading"]
+    assert got[-1]["event"] == "error" and got[-1]["code"] == "starting"
+    assert "didn't finish within" in got[-1]["message"]
+    assert limiter.active["testclient"] == 0 and not slots.sem.locked()
     release.set()
 
 
-def test_a_load_that_fails_calls_on_error_and_runs_are_refused():
+def test_the_load_and_the_run_share_one_time_limit(monkeypatch):
+    """Waiting for the load uses up the run's time: the whole request stays within the host's
+    request timeout (queue wait + RUN_S < 360 s)."""
+    monkeypatch.setattr(server.limits, "RUN_S", 1.0)
+    load, _, release = blocked_load()
+    threading.Timer(0.7, release.set).start()
+
+    def slow(hooks):
+        time.sleep(0.6)  # 0.7 s of loading + 0.6 s of run > the 1 s limit
+        return RESULT
+
+    startup = Startup(load=lambda: (load()[0] and FakeDemo(body=slow), VERSIONS))
+    client = TestClient(create_app(None, open_budget(), load=startup))
+    got = events(client.post("/estimate", json={"problem": "p"}))
+    assert got[-1]["event"] == "error" and got[-1]["code"] == "timeout"
+
+
+def test_a_load_that_fails_calls_on_error_and_runs_end_in_starting():
     failed = threading.Event()
 
     def load():
@@ -84,8 +119,8 @@ def test_a_load_that_fails_calls_on_error_and_runs_are_refused():
     assert failed.wait(5) and not startup.ready
     client = TestClient(create_app(None, open_budget(), load=startup))
     assert client.get("/health").json()["ready"] is False
-    r = client.post("/estimate", json={"problem": "p"})
-    assert (r.status_code, r.json()["error"]["code"]) == (503, "starting")
+    got = events(client.post("/estimate", json={"problem": "p"}))
+    assert got[-1]["code"] == "starting" and "failed" in got[-1]["message"]
 
 
 def test_given_a_demo_it_is_ready_at_once():

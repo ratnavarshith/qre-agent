@@ -15,6 +15,7 @@ Body: `{"problem": "<1 to 1500 characters, trimmed>"}`, at most 8 KB, no other f
 | `{"event": "escalated"}` | policy f restarted the task on the strong model |
 | `{"event": "ping"}` | every 10 s of silence, so proxies keep the connection |
 | `{"event": "result", ...}` | last, on success |
+| `{"event": "loading"}` | only after a cold start: the run is waiting for the estimators to finish loading (pings continue) |
 | `{"event": "error", "code", "message"}` | last, on a failure after the stream began |
 
 `result` has: `run_id`; `answer` (the agent's final JSON, or null); `table` (the cited estimate results as the tools returned them, surface then bicycle; when there is no answer, the last result of each architecture); `verification` (`{"passed", "failures"}`, null without an answer; a failed verify is returned, not hidden); `verify_passed_first_try`; `stop_reason`; `routing` (`policy`, `escalated`, `reason`, `answered_by`, both legs' models and costs, `cache_hits`, `cache_misses`); `assumptions`; `steps`; `cost_usd` (ours, both legs); `latency_s`; `versions` and `measurement_tables` (the sha256 of each bicycle table).
@@ -33,9 +34,8 @@ Before the stream starts: an HTTP status and `{"error": {"code", "message"}}`, w
 | 503 | `daily_cap` | the key's `usage_daily` reached $0.75; until 00:00 UTC |
 | 503 | `budget_exhausted` | the key has under $0.40 left, or a call came back out of credit; until the process restarts |
 | 503 | `budget_unknown` | the key's budget can't be read, or the key has no limit |
-| 503 | `starting` | after a cold start the estimators didn't finish loading within 60 s (normally they take a few seconds, and a run just waits for them) |
 
-After it started (`{"event": "error", ...}`): `timeout` (240 s), `busy` (no place in 60 s), `budget_exhausted` (OpenRouter 402/403 out of credit: see `llm.status_kind`), `provider_busy` (in-flight budget still full after the retries), `run_cap` (the run would pass $0.35), `provider_error` (both legs failed after retries), `internal` (no detail is sent; the log has the exception type).
+After it started (`{"event": "error", ...}`): `timeout` (240 s, waiting for the load included), `starting` (the estimators' load failed, or didn't finish within the run's 240 s), `busy` (no place in 60 s), `budget_exhausted` (OpenRouter 402/403 out of credit: see `llm.status_kind`), `provider_busy` (in-flight budget still full after the retries), `run_cap` (the run would pass $0.35), `provider_error` (both legs failed after retries), `internal` (no detail is sent; the log has the exception type).
 
 ## The page
 
@@ -63,7 +63,9 @@ Two sharp edges: after Cancel the Run button comes back at once, but the server 
 
 The daily cap and the stop level come from `GET https://openrouter.ai/api/v1/key` (`limit_remaining`, `effective_budget.remaining_usd`, `usage_daily`), asked at most once every 30 s, so they survive a restart and count what other uses of the key spent. Runs already going can pass the daily cap; the per-run cap bounds that. `GET /limits` returns `accepting_runs`, the `reason` if not, and this address's `runs_left`. `GET /health` (or HEAD) returns `ready`, `accepting_runs`, the versions and the table hashes without any outside call. `/healthz` answers the same, but Cloud Run reserves some paths ending in `z`, so it only works inside the container; use `/health` from outside. `GET /` is the page (below). There is no docs page.
 
-**Startup.** The server answers `/`, `/health` and `/limits` as soon as it starts. Importing qiskit, QDK and the estimators, asking the compiler its version and hashing the measurement tables happen afterwards, in a background thread (`server.Startup`); until then `/health` says `"ready": false` and has no versions, and a run waits for them (up to 60 s, then `starting`), before it takes a place in the queue or counts against the address. If loading fails, the server exits, as a failed startup did before, and the host restarts the container. The checks that must hold before anything is served stay at startup: the OpenRouter key's format and the sandbox broker's ping (`check_sandbox`). The broker also listens first and imports qiskit for builds in the background.
+**Startup.** The server answers `/`, `/health` and `/limits` as soon as it starts. Importing qiskit, QDK and the estimators, asking the compiler its version and hashing the measurement tables happen afterwards, in a background thread (`server.Startup`); until then `/health` says `"ready": false` and has no versions, and a run that arrives meanwhile takes its place, sends `loading` and waits for them inside its own 240 s limit, so the whole request (60 s of queue at most + 240 s) stays inside Cloud Run's 360 s request timeout. There is no separate, shorter limit for the load: a first run never fails just because loading was slow, only if it took the run's whole 240 s. If loading fails, the server exits, as a failed startup did before, and the host restarts the container. The checks that must hold before anything is served stay at startup: the OpenRouter key's format and the sandbox broker's ping (`check_sandbox`). The broker also listens first and imports qiskit for builds in the background.
+
+**On Cloud Run the background load mostly waits for the first run.** With request-based billing Cloud Run gives the instance CPU only while it starts and while a request is in flight. Startup ends when the server listens, so after a cold start the load only progresses during requests: the first deploy measured `estimators loaded in 308.3 s`, finished inside the first run's request (which had full CPU). `/health` saying `"ready": false` after the service has been idle is therefore normal, and the first run after a cold start includes the rest of the load. See docs/deploy.md for the measured times.
 
 ## A client that leaves
 

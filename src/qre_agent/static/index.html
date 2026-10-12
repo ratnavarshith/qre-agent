@@ -151,7 +151,7 @@ const MESSAGES = {
   run_cap: "This run would have cost more than the per-run limit ($0.35), so it was stopped.",
   provider_error: "The language model provider failed twice. Try again.",
   internal: "Something broke on the server. Try again.",
-  starting: "The demo was asleep and is still waking up. Try again in a few seconds.",
+  starting: "The demo couldn't finish waking up. Try again in a minute.",
   network: "Couldn't reach the server.",
   cut_off: "The connection ended before the answer arrived.",
 };
@@ -383,6 +383,8 @@ function handleEvent(event) {
     else addProgress("Started.");
   } else if (event.event === "step") {
     addProgress(STEPS[event.tool] || "Calling " + event.tool);
+  } else if (event.event === "loading") {
+    addProgress("Waking up: the demo was idle, so it is loading the estimators first.");
   } else if (event.event === "escalated") {
     addProgress("Handing the problem to a stronger model.");
   } else if (event.event === "result") {

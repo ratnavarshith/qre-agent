@@ -31,7 +31,6 @@ MAX_BODY = 8192
 MAX_PROBLEM = 1500
 PING_S = 10
 SALT = secrets.token_hex(8)  # per process: the logs can tell addresses apart, not name them
-LOAD_WAIT_S = 60  # how long a run waits for the estimators to finish loading after a cold start
 
 
 PAGE = Path(__file__).with_name("static") / "index.html"
@@ -166,7 +165,8 @@ class Startup:
     """The demo and its versions. Given (tests) they are ready at once. Given as `load`, a function
     returning (demo, versions), they are built in a background thread, so the server answers the
     page, /health and /limits while qiskit, QDK and the estimators import and the measurement
-    tables are hashed. A run waits for them (`wait`). If `load` fails, `on_error` is called."""
+    tables are hashed. A run waits for them inside its own time limit (stream). If `load` fails,
+    `on_error` is called."""
 
     def __init__(self, demo=None, versions=None, load=None, on_error=_exit_on_failed_load):
         self.demo, self.versions, self.error, self.on_error = demo, versions or {}, None, on_error
@@ -192,15 +192,6 @@ class Startup:
     @property
     def ready(self):
         return self.done.is_set() and self.error is None
-
-    async def wait(self, timeout=None):
-        """The demo, once loaded; Rejected(503, "starting") if it isn't within `timeout` seconds."""
-        if not self.done.is_set():
-            await asyncio.to_thread(self.done.wait, LOAD_WAIT_S if timeout is None else timeout)
-        if not self.ready:
-            message = "The demo is still starting; try again in a few seconds."
-            raise Rejected(503, "starting", message, 10)
-        return self.demo
 
 
 def create_app(demo, budget, limiter=None, slots=None, hops=1, versions=None, load=None):
@@ -233,7 +224,6 @@ def create_app(demo, budget, limiter=None, slots=None, hops=1, versions=None, lo
         ip = address(request)
         problem = await read_problem(request)
         await asyncio.to_thread(budget.check)
-        demo = await startup.wait()  # only after a cold start, and before a place is taken
         if slots.full():
             raise Rejected(429, "busy", "The demo is busy; try again in a minute.", 30)
         lease = Lease(limiter, ip)
@@ -243,7 +233,7 @@ def create_app(demo, budget, limiter=None, slots=None, hops=1, versions=None, lo
         )
         run_id = new_run_id()
         return StreamingResponse(
-            stream(demo, budget, lease, slots, problem, run_id, ip),
+            stream(startup, budget, lease, slots, problem, run_id, ip),
             media_type="application/x-ndjson",
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
@@ -269,9 +259,12 @@ def create_app(demo, budget, limiter=None, slots=None, hops=1, versions=None, lo
     return app
 
 
-async def stream(demo, budget, lease, slots, problem, run_id, ip):
-    """The NDJSON body of one run. A client that leaves cancels the run; its place and its
-    address's slot are given back once the run's thread has really stopped."""
+async def stream(startup, budget, lease, slots, problem, run_id, ip):
+    """The NDJSON body of one run. `startup` is a Startup (or a ready demo). A client that leaves
+    cancels the run; its place and its address's slot are given back once the run's thread has
+    really stopped. The run's time limit (RUN_S) covers waiting for the estimators to load after a
+    cold start as well as the run itself, so the whole request stays inside the host's timeout."""
+    startup = startup if isinstance(startup, Startup) else Startup(startup)
     loop = asyncio.get_running_loop()
     queue, cancel = asyncio.Queue(), threading.Event()
     hooks = Hooks(lambda e: loop.call_soon_threadsafe(queue.put_nowait, e), cancel)
@@ -283,11 +276,28 @@ async def stream(demo, budget, lease, slots, problem, run_id, ip):
             outcome = error_event("busy", "No place came free in time.")
             yield line(outcome)
             return
+        deadline = loop.time() + limits.RUN_S
+        if not startup.done.is_set():  # only after a cold start: the estimators are still loading
+            yield line({"event": "loading"})
+            # bounded, so the waiting thread ends with the run even if the load never does
+            wait_s = deadline - loop.time()
+            loaded = asyncio.ensure_future(asyncio.to_thread(startup.done.wait, wait_s))
+            while not loaded.done():
+                left = deadline - loop.time()
+                if left <= 0:
+                    break
+                await asyncio.wait({loaded}, timeout=min(PING_S, left))
+                if not loaded.done() and loop.time() < deadline:
+                    yield line({"event": "ping"})
+        if not startup.ready:
+            why = "failed" if startup.error else f"didn't finish within {limits.RUN_S} s"
+            outcome = error_event("starting", f"Loading the estimators {why}.")
+            yield line(outcome)
+            return
         task = asyncio.ensure_future(
-            asyncio.to_thread(work, demo, budget, problem, run_id, hooks, outcome.update)
+            asyncio.to_thread(work, startup.demo, budget, problem, run_id, hooks, outcome.update)
         )
         task.add_done_callback(lambda _: (slots.release(), lease.release()))
-        deadline = loop.time() + limits.RUN_S
         while True:
             left = deadline - loop.time()
             if left <= 0:
