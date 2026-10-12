@@ -1,19 +1,79 @@
 # qre-agent
 
-Working out what a fault-tolerant quantum computer needs to run an algorithm means building the circuit, picking an error-correcting code, and then driving an estimator by hand for each choice. This repo does the estimating part for two architectures, the surface code (Microsoft's QDK estimator) and IBM's bicycle/gross codes (their bicycle compiler), on the same circuits and the same assumptions. An LLM agent on top takes a plain-English problem, writes the circuit and runs both estimators (see Phase 2 below).
+You describe a quantum algorithm in plain English. An LLM agent writes the circuit and gets fault tolerant resource estimates on two architectures: the surface code (Microsoft's QDK estimator) and IBM's bicycle codes (their bicycle compiler). A deterministic verifier checks that every number in the answer came from a tool.
 
-## Headline
+**Live demo:** https://qre-demo-766408496665.us-central1.run.app
+The first load can take a few seconds if nobody used it recently, and it runs on a small budget so it may stop for the day.
 
-At physical error rate p = 1e-3, the two-gross bicycle architecture uses fewer physical-qubit-seconds than the surface code on rotation-heavy circuits and more on Toffoli-only ones (surface ÷ two-gross, so above 1 means bicycle wins):
+### Phase 1: surface vs two-gross
 
-| circuits | surface ÷ two-gross | sizes where two-gross meets the error budget |
+Physical qubit-seconds at p = 1e-3, surface ÷ two-gross (above 1 means bicycle wins). Only sizes where two-gross meets the error budget.
+
+| circuits | kind | surface ÷ two-gross |
 |---|---|---|
-| QFT, QPE | 2.9 to 7.4x | n = 4 to 16 |
-| TFIM | 2.9 to 4.7x | n = 4 to 32 |
-| Grover | 0.74 to 0.97x (bicycle 1.05 to 1.35x worse, about break-even) | n = 4 to 64 |
-| adder | 0.45 to 0.65x (bicycle 1.5 to 2.2x worse) | n = 4 to 64 |
+| QFT, QPE (n = 4 to 16) | rotation heavy | 2.9 to 7.4x |
+| TFIM (n = 4 to 32) | rotation heavy | 2.9 to 4.7x |
+| Grover (n = 4 to 64) | Toffoli only | 0.74 to 0.97x |
+| adder (n = 4 to 64) | Toffoli only | 0.45 to 0.65x |
 
-At the largest rotation-heavy sizes (QFT/QPE n = 20, TFIM n = 64) the ratio would be 8.8x and 3.5x, but two-gross itself exceeds the error budget there, so I don't count them. The plain gross code fails the budget on every circuit at p = 1e-3. At p = 1e-4 the picture flips: against two-gross, the surface code is better by 11 to 200x (see the factory caveat below). The full table is in [results/comparison/table.md](results/comparison/table.md).
+Bicycle uses far fewer qubits but runs much longer. At p = 1e-4 the surface code wins everywhere, but that comparison is mostly about factory choice (see Limitations).
+
+### Phase 2: which model runs the agent
+
+40 tasks, 3 passes per model. Mean ± sd across passes.
+
+| model | correct | cost per run |
+|---|---|---|
+| gemini-2.5-flash | 82% ± 6 | $0.0044 |
+| deepseek-v3.2 | 84% ± 3 | $0.0080 |
+| haiku-4.5 | 81% ± 1 | $0.0290 |
+| sonnet-5 | 97% ± 1 | $0.0464 |
+
+### Phase 3: making it hold up
+
+- **Faults.** With 30% of LLM calls failing on purpose, Gemini got 20% of tasks right without retries and fallback, 75% with them (one pass each).
+- **Routing.** Start on Gemini, send to Sonnet when Gemini writes its own circuit or verify fails. In simulation that is 94% correct at half of Sonnet's cost ($0.023 vs $0.046 per task). One live pass got 95%. The rule was designed on the same data, so the simulation flatters it.
+- **Prompt injection.** Delimiters plus a "don't follow instructions in tool output" rule did nothing on Gemini (9/30 attacks followed, vs 8/30 with no defense). A regex filter got it to 1/30, but I wrote the regex and the attacks together, so that number is optimistic.
+- **CI eval gate.** PRs that touch the agent run 10 tasks on Gemini in CI and fail if they break.
+
+### Run it locally
+
+Needs Docker and an OpenRouter key in `.env` (`OPENROUTER_API_KEY=...`). The image builds IBM's compiler inside.
+
+```
+docker build -t qre-demo .
+docker run --rm -p 8080:8080 --tmpfs /sandbox-tmp:size=64m --env-file .env qre-demo
+```
+
+Then open http://localhost:8080. Phase 1 alone needs no key: set up Python and the compiler as in [Running it](#running-it), then `python scripts/compare.py results/comparison/config.yaml`.
+
+### Docs
+
+- [docs/agent-design.md](docs/agent-design.md): tools, verifier, evals, sandbox, CI gate
+- [docs/bicycle-interface.md](docs/bicycle-interface.md), [docs/qdk-interface.md](docs/qdk-interface.md): how each estimator is driven
+- [docs/demo-api.md](docs/demo-api.md), [docs/demo-image.md](docs/demo-image.md), [docs/deploy.md](docs/deploy.md): the demo
+
+## What I found
+
+**Bicycle wins on rotations, loses on Toffolis.** On QFT, QPE and TFIM the two-gross code needs 2.9 to 7.4x fewer qubit-seconds than the surface code at p = 1e-3. On Grover it is slightly worse (1.03 to 1.35x) and on adders 1.5 to 2.2x worse. It uses 23 to 800x fewer qubits but runs 50 to 140x longer, because it has one T factory. IBM's Qiskit-to-PBC parser had two bugs (the rotation angle has the wrong sign and scale, and rotations land on the wrong qubits), so I wrote my own converter ([details](docs/bicycle-interface.md#2-parser-bugs-and-how-we-correct-them)). These runtimes depend on a timestep length I had to assume (66.7 ns). The rotation heavy wins survive unless the real timestep is about 3x longer.
+
+**Sonnet is clearly best, the cheap models are a tie.** Sonnet 97%, the other three 81 to 84%, and those three are within noise of each other. Everyone does fine on standard tasks (93 to 100%). The gap is in tasks where the agent writes its own circuit: Sonnet 87%, the others 43 to 60%.
+
+**Verify passes more often than answers are correct.** This was the main surprise. Verify only checks that the answer's numbers match tool outputs. It can't tell that the agent built the wrong circuit or misread the error rate. 16 Gemini runs, 23 Haiku, 14 DeepSeek and 4 Sonnet passed verify and were still wrong (57 of 480). So verify alone is a bad signal for when to escalate. That's why the routing rule also escalates on "Gemini wrote its own circuit".
+
+**Prompt level injection defenses didn't help on Gemini.** Wrapping tool output in delimiters and telling the model not to follow instructions in it: 9 of 30 attacks followed, against 8 of 30 with nothing. That's no change. The regex filter is what dropped it to 1 of 30. But the same session wrote both the attacks and the regex, so it was shaped to catch them. On the 2 attacks the regex missed, the full guardrail was followed 1 of 6 times, same as no defense. All of this is Gemini only. Sonnet, which the demo escalates to, wasn't tested.
+
+**Ambiguous tasks pass about half the time on Gemini.** 8 of 15 in the eval, 4 of 14 in later runs. The other models do much better here (DeepSeek and Haiku 13/15, Sonnet 15/15). Gemini's two failure modes: it asks the user for n and loops until the step limit, or it uses the default code and doesn't say which. Only one ambiguous task is in the CI gate because of this.
+
+**Bicycle tables differ per build.** IBM's compiler breaks cost ties in `HashMap` order when it generates its measurement tables. So every build makes different tables, and bicycle timesteps move by about 1%. Qubits, T counts and pass/fail don't change. I record each table's sha256 with every result and in the demo's `/health`. I sent a fix upstream ([PR #28](https://github.com/qiskit-community/bicycle-architecture-compiler/pull/28), switches to `BTreeMap`). It's still open.
+
+**Reliability layer works, the fallback is untested on quality.** Without retries, Gemini's success falls from 75% at 0% faults to 20% at 30% faults. With retries and a Haiku fallback it stays at 75 to 78%. Only 5 runs ever needed the fallback, too few to say if switching models mid run hurts.
+
+**The eval found real bugs.** Gemini rejects numeric enums in tool schemas. The sandbox crashed on a π in the agent's code (Windows code page). Rotations at exactly ±π/2 made the surface estimator raise. All fixed, and 27 runs were rerun.
+
+**Limits of the evals.** One eval run per model, 3 passes. The spreads are noise over 3 samples, not confidence intervals. I revised the grader (v1 to v2) after reading the failures, so v2 is partly fitted to these runs. It moved Haiku from 72% to 81%; the old numbers are in [results/eval/summary.md](results/eval/summary.md). The routing policy was also designed on these runs.
+
+Built with a lot of help from Claude Code. The design, review and decisions are mine.
 
 ## Pipeline
 
