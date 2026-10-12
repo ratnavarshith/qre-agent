@@ -26,6 +26,36 @@ KEY = "sk-or-v1-" + "0" * 64  # not a real key
 APP_UID, SANDBOX_UID = "10001", "10002"
 SURFACE_QUBITS, BICYCLE_QUBITS = 140015, 1226  # 4-qubit QFT at p = 1e-3 (results/comparison)
 
+# Run inside the container right after it starts: polls every 50 ms and times, from the start of
+# the container's first process (the entrypoint), the first answer to GET / and the moment
+# /health has the versions (everything loaded). /proc/uptime and a process's start time share the
+# host's clock, so the times don't include docker exec's own start-up.
+STARTUP = """
+import json, os, time, urllib.request as u
+tick = os.sysconf('SC_CLK_TCK')
+started = int(open('/proc/1/stat').read().rsplit(')', 1)[1].split()[19]) / tick
+def since():
+    return round(float(open('/proc/uptime').read().split()[0]) - started, 2)
+def get(path):
+    try:
+        r = u.urlopen('http://127.0.0.1:8080' + path, timeout=1)
+        return r.status, r.read()
+    except Exception:
+        return None, b''
+first = ready = None
+end = time.monotonic() + 240
+while time.monotonic() < end and ready is None:
+    if first is None and get('/')[0] == 200:
+        first = since()
+    if first is not None:
+        status, body = get('/health')
+        if status == 200:
+            health = json.loads(body)
+            if health.get('ready', True) and health.get('versions'):
+                ready = since()
+    time.sleep(0.05)
+print(json.dumps({'first_response_s': first, 'ready_s': ready}))
+"""
 HEALTH = "import urllib.request as u; print(u.urlopen('http://127.0.0.1:8080/health', timeout=5).read().decode())"
 PROCESSES = """
 import json, os
@@ -130,18 +160,14 @@ class Smoke:
         )  # fmt: skip
         if r.returncode:
             sys.exit(f"docker run failed: {r.stderr}")
-        start = time.monotonic()
-        while time.monotonic() - start < 240:
-            if docker("inspect", "-f", "{{.State.Running}}", self.name).stdout.strip() != "true":
-                print(docker("logs", self.name).stdout + docker("logs", self.name).stderr)
-                sys.exit("the container exited before it was ready")
-            code, out, _ = self.run_python(HEALTH)
-            if code == 0:
-                self.ready_s = time.monotonic() - start
-                return json.loads(out)
-            time.sleep(1)
-        print(docker("logs", self.name).stderr)
-        sys.exit("the server was not ready in 240 s")
+        code, out, err = self.run_python(STARTUP)
+        times = json.loads(out) if code == 0 and out else {}
+        self.first_response_s, self.ready_s = times.get("first_response_s"), times.get("ready_s")
+        if self.ready_s is None:
+            print(docker("logs", self.name).stdout + docker("logs", self.name).stderr + err)
+            sys.exit("the server was not ready in 240 s")
+        code, out, _ = self.run_python(HEALTH)
+        return json.loads(out)
 
     def stop(self):
         docker("rm", "-f", self.name)
@@ -321,7 +347,10 @@ def main():
     smoke = Smoke(args.image, args.commit, args.lock)
     try:
         health = smoke.start()
-        print(f"ready after {smoke.ready_s:.0f} s")
+        print(
+            f"start to first response (GET /): {smoke.first_response_s} s; "
+            f"start to ready (/health with versions): {smoke.ready_s} s"
+        )
         time.sleep(3)
         smoke.note_memory("idle, ready")
         smoke.test_health(health)
