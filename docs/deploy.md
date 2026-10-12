@@ -231,6 +231,21 @@ Do these before sharing the URL. Checks 1 to 3 cost nothing. Checks 4 and 5 make
    - then undo all of it, or the next deploy uses a dead key and gets no traffic: `gcloud run services update-traffic qre-demo --region=$REGION --remove-tags=oocheck`, `gcloud run services update qre-demo --region=$REGION --set-secrets=OPENROUTER_API_KEY=qre-demo-openrouter-key:2`, `gcloud run services update-traffic qre-demo --region=$REGION --to-latest`, disable the new secret version, and delete the $0 key on OpenRouter.
 7. **Cold start.** Leave it idle for 20 minutes, then time the first request: `curl -s -o /dev/null -w "%{http_code} in %{time_total} s\n" "$URL/"`. Inside the container the server first answers in about 1.1 s on the CI runner (docs/demo-image.md); the rest of a cold start is Cloud Run starting an instance and pulling the 332 MB image. Record the number.
 
+## Cold starts and the first run
+
+Measured on revision 00001 (the first deploy) and 00002 (`aeb6904`: the server answers before the estimators load, #13), each once. The run numbers are for the example prompt (a 16-qubit QFT) or a 4-qubit QFT, both answered by Gemini.
+
+| | value |
+|---|---|
+| first GET / after idling, instance shut down | 21 s on revision 00001; **7.1 s** on 00002 |
+| GET /, warm | 0.13 s |
+| container start to first response, on the CI runner (median of 5) | 2.51 s before #13; 1.03 to 1.09 s after (docs/demo-image.md) |
+| background load of the estimators on Cloud Run | 308 s: from 05:50:03 (startup) to 05:55:11, finished inside the first run's request |
+| first run after that, end to end (Cloud Run request log) | **16.1 s**: 2.3 s waiting for the rest of the load, then a 13.7 s run |
+| later runs, end to end | 13.8 s (13.7 s run); the first revision's two runs took 19.0 and 18.2 s |
+
+Why the load took 308 s: with request-based billing Cloud Run gives an instance CPU only while it starts and while a request is in flight. Startup ends when the server listens, so the load then crept along on the CPU of a few `/health` requests until a run's request gave it full CPU, after which the rest took 2.3 s. So after idling, `/health` saying `"ready": false` is normal, and the first run includes whatever is left of the load. That run had waited after a deploy; one arriving soon after a true cold start would wait for more of the load, about 5 to 6 s on this instance going by revision 00001's start-up (not measured directly). Since `b8f37e7` (#14) that wait counts against the run's 240 s, so a first run fails only if loading takes the whole 240 s. Always-on CPU (`--no-cpu-throttling`) would let the load finish in the background, but it bills the instance for its whole life, idle minutes included, so it isn't used.
+
 ## First deploy: what happened
 
 Deployed 2026-10-12 as revision `qre-demo-00001-d49`, image `sha256:aa85552a…` (commit `04cb453`), at https://qre-demo-766408496665.us-central1.run.app.
@@ -243,7 +258,7 @@ Deployed 2026-10-12 as revision `qre-demo-00001-d49`, image `sha256:aa85552a…`
 | 4. One real run | Passed: Gemini answered, verified, $0.0047 in 5 model calls and 18.8 s (16-qubit QFT at p = 1e-4: 136,285 surface and 1,601 gross physical qubits, matching local estimates). OpenRouter's usage figure was not compared |
 | 5. Client address | Passed: all three `/limits` calls showed the same runs left; forged headers are ignored, `QRE_PROXY_HOPS=1` is right |
 | 6. Out of credit | Skipped on purpose (unit tests cover it) |
-| 7. Cold start | 21 s for the first GET / after idling (warm: 0.13 s), measured before the server answered ahead of loading the estimators. In the container the first answer then took 2.5 s on the CI runner (more on Cloud Run's 1 vCPU) and now takes 1.1 s; the cold start on Cloud Run is to be measured again after the next deploy |
+| 7. Cold start | 21 s for the first GET / after idling (warm: 0.13 s). After the server stopped loading the estimators before answering (revision 00002): **7.1 s**, measured after 24 minutes idle (a new instance started for it). Details below |
 
 What went wrong on the way, and is now in the steps above: the secret's first version (a pasted block fed `read`), and the deploy's `mount-path` (Git Bash path rewriting).
 
@@ -251,4 +266,5 @@ What went wrong on the way, and is now in the steps above: the secret's first ve
 
 - **Per-unit prices:** the Artifact Registry and Secret Manager overage rates come from memory, because the pricing pages didn't render. The free-tier amounts come from Google's free-tier page.
 - **Deploy permissions:** whether `run.developer` bound on the service alone is enough for the workflow's `gcloud run deploy`. The first workflow deploy is the test.
-- **Cost against OpenRouter's own figure** (check 4) and the **cold-start time** (check 7).
+- **Cost against OpenRouter's own figure** (check 4).
+- **A true cold start's first run:** the wait for the load was measured after a deploy (2.3 s), not right after a shut-down instance woke up.
