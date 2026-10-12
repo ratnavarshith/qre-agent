@@ -69,3 +69,15 @@ def test_main_reports_each_check_and_fails_if_one_fails(capsys):
     assert "selfcheck FAILED: bad" in out
     assert selfcheck.main([("good", lambda: (True, "fine"))]) == 0
     assert "selfcheck passed" in capsys.readouterr().out
+
+
+def test_the_user_check_compares_the_uid_the_code_saw(monkeypatch):
+    """The circuit has no instructions, so it is falsy: the check must not mistake it for a
+    failure (the first CI run did)."""
+    monkeypatch.setattr(selfcheck, "sandbox_uid", lambda: "10002")
+    monkeypatch.setattr(selfcheck, "run_circuit_code", fake("10002"))
+    assert selfcheck.check_user()[0] is True
+    monkeypatch.setattr(selfcheck, "run_circuit_code", fake("10001"))  # it ran as the server's user
+    assert selfcheck.check_user()[0] is False
+    monkeypatch.setattr(selfcheck, "run_circuit_code", fake(SandboxError("broker unavailable")))
+    assert selfcheck.check_user()[0] is False

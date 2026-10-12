@@ -28,16 +28,18 @@ def last_line(text):
     return lines[-1] if lines else ""
 
 
-def check_user():
+def sandbox_uid():
     import pwd  # Linux only, like the image
 
+    return str(pwd.getpwnam("sandbox").pw_uid)
+
+
+def check_user():
     circuit, error = attempt(HEAD + "circuit = QuantumCircuit(1, name=str(os.getuid()))\n")
-    want = str(pwd.getpwnam("sandbox").pw_uid)
-    got = circuit.name if circuit else error
-    return (
-        circuit is not None and got == want,
-        f"uid {got}, sandbox is {want}, this process {os.getuid()}",
-    )
+    want = sandbox_uid()
+    got = circuit.name if circuit is not None else error  # a circuit with no gates is falsy
+    me = os.getuid() if hasattr(os, "getuid") else None
+    return circuit is not None and got == want, f"uid {got}, sandbox is {want}, this process {me}"
 
 
 def check_environment():
@@ -76,7 +78,7 @@ def check_volume():
     after, again = attempt(HEAD + BUILD)
     return (
         stopped and after is not None,
-        f"{last_line(error) or 'no error'}; next build: {'ok' if after else again}",
+        f"{last_line(error) or 'no error'}; next build: {'ok' if after is not None else again}",
     )
 
 
